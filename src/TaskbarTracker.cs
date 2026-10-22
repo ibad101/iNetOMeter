@@ -1,7 +1,17 @@
 using System;
 using System.Drawing;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
 
 namespace iNetOMeter;
+
+public enum TaskbarEdge
+{
+    Bottom,
+    Top,
+    Left,
+    Right
+}
 
 public class TaskbarTracker
 {
@@ -11,7 +21,6 @@ public class TaskbarTracker
 
     public TaskbarTracker()
     {
-        // Try opening the default desktop in case running from another desktop session
         try
         {
             _defaultDesktopHandle = NativeMethods.OpenDesktop("default", 0, false, 0x01FF);
@@ -31,7 +40,6 @@ public class TaskbarTracker
         hTray = NativeMethods.FindWindow("Shell_TrayWnd", IntPtr.Zero);
         if (hTray == IntPtr.Zero)
         {
-            // If thread desktop switched, try once more
             if (_defaultDesktopHandle != IntPtr.Zero)
             {
                 NativeMethods.SetThreadDesktop(_defaultDesktopHandle);
@@ -50,27 +58,95 @@ public class TaskbarTracker
         return hTray != IntPtr.Zero;
     }
 
-    public Rectangle? GetTargetBounds(int desiredWidth = 94, int desiredHeight = 40)
+    public bool TryGetTaskbarState(out Rectangle trayRect, out Rectangle notifyRect, out Rectangle monitorRect, out TaskbarEdge edge, out bool isVisible)
     {
+        trayRect = Rectangle.Empty;
+        notifyRect = Rectangle.Empty;
+        monitorRect = Rectangle.Empty;
+        edge = TaskbarEdge.Bottom;
+        isVisible = false;
+
         if (!TryGetTaskbarWindows(out IntPtr hTray, out IntPtr hNotify))
         {
-            return null;
+            return false;
         }
 
         if (!NativeMethods.GetWindowRect(hTray, out NativeMethods.RECT trayRectRaw))
         {
-            return null;
+            return false;
         }
 
-        Rectangle trayRect = trayRectRaw.ToRectangle();
-        Rectangle notifyRect = Rectangle.Empty;
+        trayRect = trayRectRaw.ToRectangle();
 
         if (hNotify != IntPtr.Zero && NativeMethods.GetWindowRect(hNotify, out NativeMethods.RECT notifyRectRaw))
         {
             notifyRect = notifyRectRaw.ToRectangle();
         }
 
+        // Get monitor bounds for the monitor where the taskbar is located
+        IntPtr hMonitor = NativeMethods.MonitorFromWindow(hTray, NativeMethods.MONITOR_DEFAULTTONEAREST);
+        if (hMonitor != IntPtr.Zero)
+        {
+            var mi = new NativeMethods.MONITORINFO();
+            mi.cbSize = Marshal.SizeOf(mi);
+            if (NativeMethods.GetMonitorInfo(hMonitor, ref mi))
+            {
+                monitorRect = mi.rcMonitor.ToRectangle();
+            }
+        }
+
+        if (monitorRect.IsEmpty)
+        {
+            monitorRect = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
+        }
+
+        edge = GetTaskbarEdge(trayRect, monitorRect);
+        isVisible = IsTaskbarVisible(trayRect, monitorRect, edge);
+        return true;
+    }
+
+    public Rectangle? GetTargetBounds(int desiredWidth = 94, int desiredHeight = 40, bool requireVisible = false)
+    {
+        if (!TryGetTaskbarState(out Rectangle trayRect, out Rectangle notifyRect, out Rectangle monitorRect, out TaskbarEdge edge, out bool isVisible))
+        {
+            return null;
+        }
+
+        if (requireVisible && !isVisible)
+        {
+            return null;
+        }
+
         return CalculateAnchorBounds(trayRect, notifyRect, desiredWidth, desiredHeight);
+    }
+
+    public static TaskbarEdge GetTaskbarEdge(Rectangle trayRect, Rectangle monitorRect)
+    {
+        if (trayRect.Width >= trayRect.Height)
+        {
+            int midY = monitorRect.Top + monitorRect.Height / 2;
+            return trayRect.Top >= midY ? TaskbarEdge.Bottom : TaskbarEdge.Top;
+        }
+        else
+        {
+            int midX = monitorRect.Left + monitorRect.Width / 2;
+            return trayRect.Left >= midX ? TaskbarEdge.Right : TaskbarEdge.Left;
+        }
+    }
+
+    public static bool IsTaskbarVisible(Rectangle trayRect, Rectangle monitorRect, TaskbarEdge edge)
+    {
+        // When Windows auto-hides the taskbar, only a 2px-3px sliver remains on screen.
+        // If fewer than 10px of the taskbar are within the monitor boundary, it is hidden.
+        const int threshold = 10;
+        return edge switch
+        {
+            TaskbarEdge.Bottom => trayRect.Top < monitorRect.Bottom - threshold,
+            TaskbarEdge.Top => trayRect.Bottom > monitorRect.Top + threshold,
+            TaskbarEdge.Left => trayRect.Right > monitorRect.Left + threshold,
+            TaskbarEdge.Right => trayRect.Left < monitorRect.Right - threshold,
+            _ => true
+        };
     }
 
     public static Rectangle CalculateAnchorBounds(Rectangle trayRect, Rectangle notifyRect, int desiredWidth, int desiredHeight)

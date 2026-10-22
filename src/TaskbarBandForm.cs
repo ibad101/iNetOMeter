@@ -21,6 +21,7 @@ public class TaskbarBandForm : Form
     private readonly NetworkMonitor _networkMonitor;
     private readonly TaskbarTracker _taskbarTracker;
     private readonly System.Windows.Forms.Timer _updateTimer;
+    private readonly System.Windows.Forms.Timer _autoHideSyncTimer;
     private readonly ContextMenuStrip _contextMenu;
 
     private readonly Font _labelFont;
@@ -39,6 +40,11 @@ public class TaskbarBandForm : Form
 
     private NetworkSpeed _currentSpeed = new(0, 0);
     private Rectangle _lastBounds = Rectangle.Empty;
+    private bool _isWidgetShowing = true;
+
+    // WinEventHook for immediate taskbar position and auto-hide tracking
+    private IntPtr _hWinEventHook = IntPtr.Zero;
+    private readonly NativeMethods.WinEventDelegate _winEventDelegate;
 
     public TaskbarBandForm()
     {
@@ -84,19 +90,39 @@ public class TaskbarBandForm : Form
 
         // Context menu
         _contextMenu = new ContextMenuStrip();
-        var titleItem = new ToolStripMenuItem("iNetOMeter (Reference Layout)") { Enabled = false };
+        var titleItem = new ToolStripMenuItem("iNetOMeter") { Enabled = false };
+        var speedTestItem = new ToolStripMenuItem("Internet Speed Test...", null, (_, _) => SpeedTestForm.ShowOrActivate())
+        {
+            Font = new Font("Segoe UI", 9f, FontStyle.Bold)
+        };
         var exitItem = new ToolStripMenuItem("Exit", null, (_, _) => Application.Exit());
+
         _contextMenu.Items.Add(titleItem);
+        _contextMenu.Items.Add(new ToolStripSeparator());
+        _contextMenu.Items.Add(speedTestItem);
         _contextMenu.Items.Add(new ToolStripSeparator());
         _contextMenu.Items.Add(exitItem);
         ContextMenuStrip = _contextMenu;
 
-        // Periodic update timer (1 second interval)
+        // Double click launches the Internet Speed Test
+        DoubleClick += (_, _) => SpeedTestForm.ShowOrActivate();
+
+        // Bandwidth calculation timer (1 second interval)
         _updateTimer = new System.Windows.Forms.Timer
         {
             Interval = 1000
         };
         _updateTimer.Tick += OnUpdateTimerTick;
+
+        // Auto-hide synchronization timer (150ms responsive interval)
+        _autoHideSyncTimer = new System.Windows.Forms.Timer
+        {
+            Interval = 150
+        };
+        _autoHideSyncTimer.Tick += (_, _) => SyncTaskbarPositionAndVisibility();
+
+        // Pin delegate to prevent GC collection while WinEventHook is active
+        _winEventDelegate = OnWinEvent;
     }
 
     protected override CreateParams CreateParams
@@ -116,34 +142,97 @@ public class TaskbarBandForm : Form
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
-        UpdatePositionAndSpeed();
+        SyncTaskbarPositionAndVisibility();
         _updateTimer.Start();
+        _autoHideSyncTimer.Start();
+        InstallWinEventHook();
+    }
+
+    private void InstallWinEventHook()
+    {
+        try
+        {
+            if (_taskbarTracker.TryGetTaskbarWindows(out IntPtr hTray, out _))
+            {
+                NativeMethods.GetWindowThreadProcessId(hTray, out uint explorerPid);
+                _hWinEventHook = NativeMethods.SetWinEventHook(
+                    NativeMethods.EVENT_OBJECT_LOCATIONCHANGE,
+                    NativeMethods.EVENT_OBJECT_LOCATIONCHANGE,
+                    IntPtr.Zero,
+                    _winEventDelegate,
+                    explorerPid,
+                    0,
+                    NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS
+                );
+            }
+        }
+        catch
+        {
+            // If hook installation fails, the 150ms timer remains as reliable fallback
+        }
+    }
+
+    private void OnWinEvent(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+    {
+        if (IsHandleCreated && !IsDisposed)
+        {
+            BeginInvoke(new Action(SyncTaskbarPositionAndVisibility));
+        }
     }
 
     private void OnUpdateTimerTick(object? sender, EventArgs e)
     {
-        UpdatePositionAndSpeed();
+        _currentSpeed = _networkMonitor.GetCurrentSpeed();
+        if (_isWidgetShowing)
+        {
+            Invalidate();
+        }
     }
 
-    private void UpdatePositionAndSpeed()
+    private void SyncTaskbarPositionAndVisibility()
     {
-        _currentSpeed = _networkMonitor.GetCurrentSpeed();
+        if (!IsHandleCreated || IsDisposed) return;
 
-        var targetBounds = _taskbarTracker.GetTargetBounds(Width, Height);
-        if (targetBounds.HasValue && targetBounds.Value != _lastBounds && !targetBounds.Value.IsEmpty)
+        if (!_taskbarTracker.TryGetTaskbarState(out Rectangle trayRect, out Rectangle notifyRect, out Rectangle monitorRect, out TaskbarEdge edge, out bool isTaskbarVisible))
         {
-            _lastBounds = targetBounds.Value;
+            return;
+        }
+
+        if (!isTaskbarVisible)
+        {
+            // Taskbar is currently auto-hidden offscreen: hide meter immediately
+            if (_isWidgetShowing)
+            {
+                _isWidgetShowing = false;
+                NativeMethods.SetWindowPos(
+                    Handle,
+                    IntPtr.Zero,
+                    0, 0, 0, 0,
+                    NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_HIDEWINDOW
+                );
+            }
+            return;
+        }
+
+        // Taskbar is visible: calculate anchor bounds and reposition
+        Rectangle targetBounds = TaskbarTracker.CalculateAnchorBounds(trayRect, notifyRect, Width, Height);
+
+        if (!_isWidgetShowing || targetBounds != _lastBounds)
+        {
+            _lastBounds = targetBounds;
+            _isWidgetShowing = true;
+
             NativeMethods.SetWindowPos(
                 Handle,
                 NativeMethods.HWND_TOPMOST,
-                _lastBounds.X,
-                _lastBounds.Y,
-                _lastBounds.Width,
-                _lastBounds.Height,
-                NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+                targetBounds.X,
+                targetBounds.Y,
+                targetBounds.Width,
+                targetBounds.Height,
+                NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW
+            );
+            Invalidate();
         }
-
-        Invalidate();
     }
 
     protected override void OnPaintBackground(PaintEventArgs e)
@@ -162,7 +251,6 @@ public class TaskbarBandForm : Form
         g.DrawRectangle(_borderPen, 0, 0, Width - 1, Height - 1);
 
         // --- TOP ROW: DOWNLOAD ---
-        // Rounded dark-red badge
         using (var dlBadgePath = CreateRoundedRectangle(new RectangleF(4, 2, 16, 16), 3.5f))
         {
             g.FillPath(_dlBadgeBrush, dlBadgePath);
@@ -184,7 +272,6 @@ public class TaskbarBandForm : Form
         g.DrawLine(_divPen, 3f, 19.5f, Width - 3f, 19.5f);
 
         // --- BOTTOM ROW: UPLOAD ---
-        // Rounded dark-blue badge
         using (var ulBadgePath = CreateRoundedRectangle(new RectangleF(4, 22, 16, 16), 3.5f))
         {
             g.FillPath(_ulBadgeBrush, ulBadgePath);
@@ -219,8 +306,17 @@ public class TaskbarBandForm : Form
     {
         if (disposing)
         {
+            if (_hWinEventHook != IntPtr.Zero)
+            {
+                NativeMethods.UnhookWinEvent(_hWinEventHook);
+                _hWinEventHook = IntPtr.Zero;
+            }
+
             _updateTimer.Stop();
             _updateTimer.Dispose();
+
+            _autoHideSyncTimer.Stop();
+            _autoHideSyncTimer.Dispose();
 
             _labelFont.Dispose();
             _valueFont.Dispose();

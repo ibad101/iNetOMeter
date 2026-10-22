@@ -19,6 +19,14 @@ internal static class NativeMethods
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOACTIVATE = 0x0010;
     public const uint SWP_SHOWWINDOW = 0x0040;
+    public const uint SWP_HIDEWINDOW = 0x0080;
+
+    public const uint MONITOR_DEFAULTTOPRIMARY = 1;
+    public const uint MONITOR_DEFAULTTONEAREST = 2;
+
+    public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
+    public const uint WINEVENT_OUTOFCONTEXT = 0;
+    public const uint WINEVENT_SKIPOWNPROCESS = 2;
 
     public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
 
@@ -34,6 +42,15 @@ internal static class NativeMethods
         public int Height => Bottom - Top;
 
         public Rectangle ToRectangle() => new Rectangle(Left, Top, Width, Height);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -85,6 +102,8 @@ internal static class NativeMethods
         public int SizeOfData;
     }
 
+    public delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
+
     [DllImport("user32.dll", EntryPoint = "FindWindow", CharSet = CharSet.Auto)]
     public static extern IntPtr FindWindow(string lpClassName, IntPtr lpWindowName);
 
@@ -116,15 +135,30 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WindowCompositionAttributeData data);
 
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
     public static bool EnableTaskbarBlur(IntPtr hwnd, uint tintColor = 0xC8101010)
     {
         try
         {
-            // Extend DWM frame to the entire client area
             var margins = new MARGINS(-1);
             DwmExtendFrameIntoClientArea(hwnd, ref margins);
 
-            // Attempt ACCENT_ENABLE_ACRYLICBLURBEHIND (Windows 10 1803+)
             var policy = new AccentPolicy
             {
                 AccentState = AccentState.ACCENT_ENABLE_ACRYLICBLURBEHIND,
@@ -148,7 +182,6 @@ internal static class NativeMethods
                 int res = SetWindowCompositionAttribute(hwnd, ref data);
                 if (res == 0)
                 {
-                    // Fallback to ACCENT_ENABLE_BLURBEHIND if acrylic is unsupported
                     policy.AccentState = AccentState.ACCENT_ENABLE_BLURBEHIND;
                     Marshal.StructureToPtr(policy, pPolicy, false);
                     data.Data = pPolicy;
