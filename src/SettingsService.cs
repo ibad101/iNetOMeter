@@ -19,12 +19,26 @@ public class UserSettings
     public double WidgetOpacity { get; set; } = 0.96;
     public int UpdateIntervalMs { get; set; } = 1000;
 
+    // Stage 6 Notifications (default: OFF, opt-in)
+    public bool NotificationsEnabled { get; set; } = false;
+    public bool NotifyOnDisconnect { get; set; } = false;
+    public bool NotifyOnRestore { get; set; } = false;
+    public bool NotifyOnSlowSpeed { get; set; } = false;
+    public double SlowSpeedThresholdMbps { get; set; } = 5.0;
+    public int NotificationCooldownSeconds { get; set; } = 60;
+
     public UserSettings Clone() => new()
     {
         StartWithWindows = StartWithWindows,
         SpeedFormat = SpeedFormat,
         WidgetOpacity = WidgetOpacity,
-        UpdateIntervalMs = UpdateIntervalMs
+        UpdateIntervalMs = UpdateIntervalMs,
+        NotificationsEnabled = NotificationsEnabled,
+        NotifyOnDisconnect = NotifyOnDisconnect,
+        NotifyOnRestore = NotifyOnRestore,
+        NotifyOnSlowSpeed = NotifyOnSlowSpeed,
+        SlowSpeedThresholdMbps = SlowSpeedThresholdMbps,
+        NotificationCooldownSeconds = NotificationCooldownSeconds
     };
 }
 
@@ -94,6 +108,14 @@ public class SettingsService
             > 5000 => 5000,
             _ => newSettings.UpdateIntervalMs
         };
+        newSettings.SlowSpeedThresholdMbps = double.IsNaN(newSettings.SlowSpeedThresholdMbps)
+            ? 5.0
+            : Math.Clamp(newSettings.SlowSpeedThresholdMbps, 0.5, 1000.0);
+        newSettings.NotificationCooldownSeconds = Math.Clamp(
+            newSettings.NotificationCooldownSeconds,
+            10,
+            3600
+        );
 
         lock (_lock)
         {
@@ -154,6 +176,14 @@ public class SettingsService
                 {
                     loaded.WidgetOpacity = Math.Clamp(loaded.WidgetOpacity, 0.50, 1.0);
                     loaded.UpdateIntervalMs = Math.Clamp(loaded.UpdateIntervalMs, 500, 5000);
+                    loaded.SlowSpeedThresholdMbps = double.IsNaN(loaded.SlowSpeedThresholdMbps)
+                        ? 5.0
+                        : Math.Clamp(loaded.SlowSpeedThresholdMbps, 0.5, 1000.0);
+                    loaded.NotificationCooldownSeconds = Math.Clamp(
+                        loaded.NotificationCooldownSeconds,
+                        10,
+                        3600
+                    );
                     _current = loaded;
                 }
                 else

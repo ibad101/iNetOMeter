@@ -19,14 +19,23 @@ public class SettingsForm : Form
     private readonly ComboBox _cmbUpdateInterval;
     private readonly TrackBar _tbOpacity;
     private readonly Label _lblOpacityValue;
+
+    // Stage 6 Notifications Controls
+    private readonly CheckBox _chkNotificationsEnabled;
+    private readonly CheckBox _chkNotifyDisconnect;
+    private readonly CheckBox _chkNotifyRestore;
+    private readonly CheckBox _chkNotifySlowSpeed;
+    private readonly NumericUpDown _numSlowThreshold;
+    private readonly NumericUpDown _numCooldown;
+
     private readonly Button _btnSave;
     private readonly Button _btnCancel;
 
     public SettingsForm()
     {
         Text = "Settings - iNetOMeter";
-        Size = new Size(500, 460);
-        MinimumSize = new Size(480, 440);
+        Size = new Size(540, 700);
+        MinimumSize = new Size(500, 660);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -50,7 +59,7 @@ public class SettingsForm : Form
 
         var lblSub = new Label
         {
-            Text = "Customize your taskbar widget, display units, and startup behavior",
+            Text = "Customize taskbar widget, display units, and smart notifications",
             Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
             ForeColor = TextMuted,
             Location = new Point(26, 42),
@@ -58,8 +67,8 @@ public class SettingsForm : Form
         };
         Controls.Add(lblSub);
 
-        // --- 2. SETTINGS GROUP ---
-        int currentY = 80;
+        // --- 2. TASKBAR SETTINGS ---
+        int currentY = 76;
 
         // Setting 1: Start with Windows
         _chkStartup = new CheckBox
@@ -68,7 +77,7 @@ public class SettingsForm : Form
             Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
             ForeColor = TextWhite,
             Location = new Point(28, currentY),
-            Size = new Size(420, 24),
+            Size = new Size(460, 24),
             Checked = current.StartWithWindows,
             Cursor = Cursors.Hand
         };
@@ -80,11 +89,11 @@ public class SettingsForm : Form
             Font = new Font("Segoe UI", 8f, FontStyle.Regular),
             ForeColor = TextMuted,
             Location = new Point(48, currentY + 24),
-            Size = new Size(420, 18)
+            Size = new Size(450, 18)
         };
         Controls.Add(lblStartupHint);
 
-        currentY += 56;
+        currentY += 52;
 
         // Setting 2: Speed Unit Format
         var lblFormat = new Label
@@ -101,7 +110,7 @@ public class SettingsForm : Form
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
             Location = new Point(28, currentY + 22),
-            Size = new Size(430, 28),
+            Size = new Size(460, 28),
             BackColor = CardBg,
             ForeColor = TextWhite,
             FlatStyle = FlatStyle.Flat
@@ -113,7 +122,7 @@ public class SettingsForm : Form
         _cmbSpeedFormat.SelectedIndex = (int)current.SpeedFormat;
         Controls.Add(_cmbSpeedFormat);
 
-        currentY += 66;
+        currentY += 60;
 
         // Setting 3: Update Interval
         var lblInterval = new Label
@@ -130,7 +139,7 @@ public class SettingsForm : Form
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
             Location = new Point(28, currentY + 22),
-            Size = new Size(430, 28),
+            Size = new Size(460, 28),
             BackColor = CardBg,
             ForeColor = TextWhite,
             FlatStyle = FlatStyle.Flat
@@ -147,7 +156,7 @@ public class SettingsForm : Form
         };
         Controls.Add(_cmbUpdateInterval);
 
-        currentY += 66;
+        currentY += 60;
 
         // Setting 4: Widget Opacity
         var lblOpacity = new Label
@@ -165,8 +174,8 @@ public class SettingsForm : Form
             Text = $"{(int)(current.WidgetOpacity * 100)}%",
             Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
             ForeColor = Color.FromArgb(76, 168, 255),
-            Location = new Point(410, currentY),
-            Size = new Size(50, 20),
+            Location = new Point(430, currentY),
+            Size = new Size(55, 20),
             TextAlign = ContentAlignment.MiddleRight
         };
         Controls.Add(_lblOpacityValue);
@@ -180,12 +189,154 @@ public class SettingsForm : Form
             SmallChange = 1,
             LargeChange = 5,
             Location = new Point(24, currentY + 22),
-            Size = new Size(440, 45)
+            Size = new Size(470, 45)
         };
         _tbOpacity.ValueChanged += (_, _) => _lblOpacityValue.Text = $"{_tbOpacity.Value}%";
         Controls.Add(_tbOpacity);
 
-        // --- 3. BOTTOM BUTTONS ---
+        currentY += 68;
+
+        // --- 3. STAGE 6: NOTIFICATIONS SECTION ---
+        var pnlDivider = new Panel
+        {
+            BackColor = CardBorder,
+            Location = new Point(24, currentY),
+            Size = new Size(470, 1)
+        };
+        Controls.Add(pnlDivider);
+        currentY += 10;
+
+        var lblNotifSection = new Label
+        {
+            Text = "Smart Desktop Notifications",
+            Font = new Font("Segoe UI", 11.5f, FontStyle.Bold),
+            ForeColor = TextWhite,
+            Location = new Point(26, currentY),
+            AutoSize = true
+        };
+        Controls.Add(lblNotifSection);
+        currentY += 28;
+
+        // Master toggle
+        _chkNotificationsEnabled = new CheckBox
+        {
+            Text = "Enable Windows Desktop Notifications (Opt-in)",
+            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
+            ForeColor = TextWhite,
+            Location = new Point(28, currentY),
+            Size = new Size(460, 24),
+            Checked = current.NotificationsEnabled,
+            Cursor = Cursors.Hand
+        };
+        _chkNotificationsEnabled.CheckedChanged += OnNotificationsMasterToggled;
+        Controls.Add(_chkNotificationsEnabled);
+        currentY += 30;
+
+        // Sub-toggles
+        _chkNotifyDisconnect = new CheckBox
+        {
+            Text = "Alert when internet connection is lost",
+            Font = new Font("Segoe UI", 9f, FontStyle.Regular),
+            ForeColor = TextWhite,
+            Location = new Point(48, currentY),
+            Size = new Size(430, 22),
+            Checked = current.NotifyOnDisconnect,
+            Cursor = Cursors.Hand
+        };
+        Controls.Add(_chkNotifyDisconnect);
+        currentY += 26;
+
+        _chkNotifyRestore = new CheckBox
+        {
+            Text = "Alert when internet connection is restored",
+            Font = new Font("Segoe UI", 9f, FontStyle.Regular),
+            ForeColor = TextWhite,
+            Location = new Point(48, currentY),
+            Size = new Size(430, 22),
+            Checked = current.NotifyOnRestore,
+            Cursor = Cursors.Hand
+        };
+        Controls.Add(_chkNotifyRestore);
+        currentY += 26;
+
+        _chkNotifySlowSpeed = new CheckBox
+        {
+            Text = "Alert if speed test download speed is below threshold",
+            Font = new Font("Segoe UI", 9f, FontStyle.Regular),
+            ForeColor = TextWhite,
+            Location = new Point(48, currentY),
+            Size = new Size(430, 22),
+            Checked = current.NotifyOnSlowSpeed,
+            Cursor = Cursors.Hand
+        };
+        Controls.Add(_chkNotifySlowSpeed);
+        currentY += 32;
+
+        // Slow speed threshold input
+        var lblSlowThreshold = new Label
+        {
+            Text = "Slow speed threshold (Mbps):",
+            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
+            ForeColor = TextMuted,
+            Location = new Point(48, currentY + 3),
+            AutoSize = true
+        };
+        Controls.Add(lblSlowThreshold);
+
+        _numSlowThreshold = new NumericUpDown
+        {
+            Location = new Point(240, currentY),
+            Size = new Size(90, 24),
+            Minimum = 0.5m,
+            Maximum = 1000.0m,
+            DecimalPlaces = 1,
+            Increment = 1.0m,
+            Value = (decimal)Math.Clamp(current.SlowSpeedThresholdMbps, 0.5, 1000.0),
+            BackColor = CardBg,
+            ForeColor = TextWhite
+        };
+        Controls.Add(_numSlowThreshold);
+        currentY += 32;
+
+        // Cooldown input
+        var lblCooldown = new Label
+        {
+            Text = "Notification cooldown (seconds):",
+            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
+            ForeColor = TextMuted,
+            Location = new Point(48, currentY + 3),
+            AutoSize = true
+        };
+        Controls.Add(lblCooldown);
+
+        _numCooldown = new NumericUpDown
+        {
+            Location = new Point(240, currentY),
+            Size = new Size(90, 24),
+            Minimum = 10,
+            Maximum = 3600,
+            DecimalPlaces = 0,
+            Increment = 10,
+            Value = Math.Clamp(current.NotificationCooldownSeconds, 10, 3600),
+            BackColor = CardBg,
+            ForeColor = TextWhite
+        };
+        Controls.Add(_numCooldown);
+        currentY += 30;
+
+        var lblTrafficNote = new Label
+        {
+            Text = "Note: Live idle traffic does not indicate line speed. Slow speed alerts trigger after speed test measurements.",
+            Font = new Font("Segoe UI", 7.5f, FontStyle.Italic),
+            ForeColor = TextMuted,
+            Location = new Point(48, currentY),
+            Size = new Size(440, 30)
+        };
+        Controls.Add(lblTrafficNote);
+
+        UpdateNotificationControlsState(current.NotificationsEnabled);
+
+        // --- 4. BOTTOM BUTTONS ---
         int btnY = ClientSize.Height - 55;
 
         _btnSave = new Button
@@ -238,6 +389,20 @@ public class SettingsForm : Form
         }
     }
 
+    private void OnNotificationsMasterToggled(object? sender, EventArgs e)
+    {
+        UpdateNotificationControlsState(_chkNotificationsEnabled.Checked);
+    }
+
+    private void UpdateNotificationControlsState(bool enabled)
+    {
+        _chkNotifyDisconnect.Enabled = enabled;
+        _chkNotifyRestore.Enabled = enabled;
+        _chkNotifySlowSpeed.Enabled = enabled;
+        _numSlowThreshold.Enabled = enabled;
+        _numCooldown.Enabled = enabled;
+    }
+
     private void OnSaveClicked(object? sender, EventArgs e)
     {
         var settings = new UserSettings
@@ -250,7 +415,13 @@ public class SettingsForm : Form
                 2 => 2000,
                 _ => 1000
             },
-            WidgetOpacity = _tbOpacity.Value / 100.0
+            WidgetOpacity = _tbOpacity.Value / 100.0,
+            NotificationsEnabled = _chkNotificationsEnabled.Checked,
+            NotifyOnDisconnect = _chkNotifyDisconnect.Checked,
+            NotifyOnRestore = _chkNotifyRestore.Checked,
+            NotifyOnSlowSpeed = _chkNotifySlowSpeed.Checked,
+            SlowSpeedThresholdMbps = (double)_numSlowThreshold.Value,
+            NotificationCooldownSeconds = (int)_numCooldown.Value
         };
 
         SettingsService.Instance.Save(settings);

@@ -45,11 +45,15 @@ public class TaskbarBandForm : Form
     // WinEventHook for immediate taskbar position and auto-hide tracking
     private IntPtr _hWinEventHook = IntPtr.Zero;
     private readonly NativeMethods.WinEventDelegate _winEventDelegate;
+    private readonly uint _taskbarCreatedMsg;
+    private readonly ConnectivityMonitor _connectivityMonitor;
 
     public TaskbarBandForm()
     {
         _networkMonitor = new NetworkMonitor();
         _taskbarTracker = new TaskbarTracker();
+        _taskbarCreatedMsg = NativeMethods.RegisterWindowMessage("TaskbarCreated");
+        _connectivityMonitor = new ConnectivityMonitor();
 
         // Window styling for native taskbar integration
         FormBorderStyle = FormBorderStyle.None;
@@ -257,6 +261,27 @@ public class TaskbarBandForm : Form
         }
     }
 
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == _taskbarCreatedMsg && _taskbarCreatedMsg != 0)
+        {
+            // Windows Explorer restarted: re-establish hooks and reposition
+            if (_hWinEventHook != IntPtr.Zero)
+            {
+                NativeMethods.UnhookWinEvent(_hWinEventHook);
+                _hWinEventHook = IntPtr.Zero;
+            }
+            InstallWinEventHook();
+            SyncTaskbarPositionAndVisibility();
+        }
+        else if (m.Msg == NativeMethods.WM_DISPLAYCHANGE || m.Msg == NativeMethods.WM_DPICHANGED)
+        {
+            SyncTaskbarPositionAndVisibility();
+        }
+
+        base.WndProc(ref m);
+    }
+
     protected override void OnPaintBackground(PaintEventArgs e)
     {
         e.Graphics.Clear(BackgroundCharcoal);
@@ -357,6 +382,9 @@ public class TaskbarBandForm : Form
             _borderPen.Dispose();
 
             _contextMenu.Dispose();
+
+            _connectivityMonitor.Dispose();
+            WindowsNotificationService.Instance.Dispose();
         }
         base.Dispose(disposing);
     }

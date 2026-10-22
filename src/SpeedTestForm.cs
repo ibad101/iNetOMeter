@@ -211,6 +211,17 @@ public class SpeedTestForm : Form
 
                 // Stage 4 requirement: Record to persistent history
                 HistoryService.Instance.AddResult(result);
+
+                // Stage 6 requirement: Slow speed notification check
+                var settings = SettingsService.Instance.Current;
+                if (settings.NotificationsEnabled && settings.NotifyOnSlowSpeed && result.DownloadMbps < settings.SlowSpeedThresholdMbps)
+                {
+                    WindowsNotificationService.Instance.ShowNotification(
+                        "Slow Download Speed",
+                        $"Download speed is below your configured threshold: {result.DownloadMbps:0.0} Mbps (threshold: {settings.SlowSpeedThresholdMbps:0.0} Mbps).",
+                        NotificationType.SlowSpeed
+                    );
+                }
             }
             else
             {
@@ -517,6 +528,15 @@ public class SpeedTestForm : Form
         path.AddArc(rect.X, rect.Bottom - diameter, diameter, diameter, 90, 90);
         path.CloseFigure();
         return path;
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        base.OnFormClosing(e);
+        if (_isRunning)
+        {
+            _cts?.Cancel();
+        }
     }
 
     protected override void Dispose(bool disposing)

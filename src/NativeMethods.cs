@@ -28,6 +28,9 @@ internal static class NativeMethods
     public const uint WINEVENT_OUTOFCONTEXT = 0;
     public const uint WINEVENT_SKIPOWNPROCESS = 2;
 
+    public const int WM_DISPLAYCHANGE = 0x007E;
+    public const int WM_DPICHANGED = 0x02E0;
+
     public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
 
     [StructLayout(LayoutKind.Sequential)]
@@ -151,6 +154,9 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    public static extern uint RegisterWindowMessage(string lpString);
 
     public static bool EnableTaskbarBlur(IntPtr hwnd, uint tintColor = 0xC8101010)
     {

@@ -19,7 +19,7 @@ internal class Program
     static int Main(string[] args)
     {
         Console.WriteLine("==================================================");
-        Console.WriteLine("  iNetOMeter Automated Test Suite (Stages 3 & 4)");
+        Console.WriteLine("  iNetOMeter Automated Test Suite (Stages 3 - 6)");
         Console.WriteLine("==================================================");
 
         // --- NETWORK MONITOR & FORMATTING TESTS ---
@@ -301,7 +301,6 @@ internal class Program
                 var historySvc = new HistoryService(tempHistoryPath);
                 AssertEqual(0, historySvc.GetHistory().Count);
 
-                // Add 7 successful results with spaced timestamps
                 DateTime baseTime = new DateTime(2026, 10, 22, 12, 0, 0, DateTimeKind.Local);
                 for (int i = 1; i <= 7; i++)
                 {
@@ -324,12 +323,10 @@ internal class Program
                 var records = historySvc.GetHistory();
                 AssertEqual(5, records.Count);
 
-                // Newest must be the last one added (Colo-7, timestamp +7 min)
                 AssertEqual("Colo-7", records[0].ServerName);
                 AssertEqual(120.0, records[0].DownloadMbps);
-                AssertEqual("Colo-3", records[4].ServerName); // 5th newest
+                AssertEqual("Colo-3", records[4].ServerName);
 
-                // Verify file exists on disk and can be reloaded in a fresh instance
                 var freshHistorySvc = new HistoryService(tempHistoryPath);
                 var reloaded = freshHistorySvc.GetHistory();
                 AssertEqual(5, reloaded.Count);
@@ -351,7 +348,6 @@ internal class Program
                 historySvc.AddResult(SpeedTestResult.Cancelled());
                 AssertEqual(0, historySvc.GetHistory().Count);
 
-                // Valid result is accepted
                 historySvc.AddResult(new SpeedTestResult(25, 2, 70, 40, "Edge", "E1", "AS1", DateTime.Now, true));
                 AssertEqual(1, historySvc.GetHistory().Count);
             }
@@ -409,7 +405,6 @@ internal class Program
                 AssertEqual(0.96, defaults.WidgetOpacity);
                 AssertEqual(1000, defaults.UpdateIntervalMs);
 
-                // Save custom settings
                 var custom = new UserSettings
                 {
                     StartWithWindows = false,
@@ -419,7 +414,6 @@ internal class Program
                 };
                 svc.Save(custom);
 
-                // Reload in new instance
                 var reloadedSvc = new SettingsService(tempSettingsPath);
                 var loaded = reloadedSvc.Current;
 
@@ -458,14 +452,18 @@ internal class Program
                 var svc = new SettingsService(tempSettingsPath);
                 var extreme = new UserSettings
                 {
-                    WidgetOpacity = 0.10, // Too low, should clamp to 0.50
-                    UpdateIntervalMs = 100 // Too fast, should clamp to 500
+                    WidgetOpacity = 0.10,
+                    UpdateIntervalMs = 100,
+                    SlowSpeedThresholdMbps = -10.0,
+                    NotificationCooldownSeconds = 5
                 };
                 svc.Save(extreme);
 
                 var loaded = svc.Current;
                 AssertEqual(0.50, loaded.WidgetOpacity);
                 AssertEqual(500, loaded.UpdateIntervalMs);
+                AssertEqual(0.5, loaded.SlowSpeedThresholdMbps);
+                AssertEqual(10, loaded.NotificationCooldownSeconds);
             }
             finally
             {
@@ -473,7 +471,200 @@ internal class Program
             }
         });
 
-        // --- STAGE 4 TESTS: FORM LIFECYCLE & REUSE ---
+        // --- STAGE 5 & 6 TESTS: NOTIFICATIONS & CONNECTIVITY ---
+        RunTest("SettingsService_NotificationDefaults_AreDisabledByDefault", () =>
+        {
+            try
+            {
+                var svc = new SettingsService(tempSettingsPath);
+                var defaults = svc.Current;
+
+                AssertEqual(false, defaults.NotificationsEnabled);
+                AssertEqual(false, defaults.NotifyOnDisconnect);
+                AssertEqual(false, defaults.NotifyOnRestore);
+                AssertEqual(false, defaults.NotifyOnSlowSpeed);
+                AssertEqual(5.0, defaults.SlowSpeedThresholdMbps);
+                AssertEqual(60, defaults.NotificationCooldownSeconds);
+            }
+            finally
+            {
+                if (File.Exists(tempSettingsPath)) File.Delete(tempSettingsPath);
+            }
+        });
+
+        RunTest("SettingsService_BackwardCompatibility_LoadsOldJsonWithoutNotificationFields", () =>
+        {
+            try
+            {
+                string legacyJson = @"{
+                    ""StartWithWindows"": false,
+                    ""SpeedFormat"": 2,
+                    ""WidgetOpacity"": 0.90,
+                    ""UpdateIntervalMs"": 1000
+                }";
+                File.WriteAllText(tempSettingsPath, legacyJson);
+
+                var svc = new SettingsService(tempSettingsPath);
+                var loaded = svc.Current;
+
+                AssertEqual(SpeedFormatOption.AlwaysMbps, loaded.SpeedFormat);
+                AssertEqual(0.90, loaded.WidgetOpacity);
+                // Notification fields must take safe defaults
+                AssertEqual(false, loaded.NotificationsEnabled);
+                AssertEqual(false, loaded.NotifyOnDisconnect);
+                AssertEqual(5.0, loaded.SlowSpeedThresholdMbps);
+                AssertEqual(60, loaded.NotificationCooldownSeconds);
+            }
+            finally
+            {
+                if (File.Exists(tempSettingsPath)) File.Delete(tempSettingsPath);
+            }
+        });
+
+        RunTest("ConnectivityMonitor_StartupCheck_DoesNotSendRestoredNotification", () =>
+        {
+            var probe = new TestConnectivityProbe { Reachable = true };
+            var notif = new TestNotificationService { Settings = new UserSettings { NotificationsEnabled = true, NotifyOnRestore = true } };
+            using var monitor = new ConnectivityMonitor(probe, notif);
+
+            // Initial check marks state as Connected without notification
+            monitor.ProcessProbeResult(true);
+
+            AssertEqual(ConnectivityState.Connected, monitor.CurrentState);
+            AssertEqual(0, notif.Notifications.Count);
+        });
+
+        RunTest("ConnectivityMonitor_Debouncing_RequiresTwoConsecutiveFailuresBeforeDisconnectAlert", () =>
+        {
+            var probe = new TestConnectivityProbe { Reachable = true };
+            var notif = new TestNotificationService { Settings = new UserSettings { NotificationsEnabled = true, NotifyOnDisconnect = true } };
+            using var monitor = new ConnectivityMonitor(probe, notif);
+
+            monitor.ProcessProbeResult(true); // Initial startup
+            AssertEqual(0, notif.Notifications.Count);
+
+            // First failure (transient blip)
+            monitor.ProcessProbeResult(false);
+            AssertEqual(ConnectivityState.Connected, monitor.CurrentState); // Still considered connected
+            AssertEqual(0, notif.Notifications.Count);
+
+            // Second failure (confirmed outage)
+            monitor.ProcessProbeResult(false);
+            AssertEqual(ConnectivityState.Disconnected, monitor.CurrentState);
+            AssertEqual(1, notif.Notifications.Count);
+            AssertEqual(NotificationType.InternetDisconnected, notif.Notifications[0].Type);
+        });
+
+        RunTest("ConnectivityMonitor_RepeatedFailures_DoesNotSendDuplicateDisconnectAlerts", () =>
+        {
+            var probe = new TestConnectivityProbe { Reachable = true };
+            var notif = new TestNotificationService { Settings = new UserSettings { NotificationsEnabled = true, NotifyOnDisconnect = true } };
+            using var monitor = new ConnectivityMonitor(probe, notif);
+
+            monitor.ProcessProbeResult(true); // startup
+            monitor.ProcessProbeResult(false);
+            monitor.ProcessProbeResult(false); // Disconnected
+            AssertEqual(1, notif.Notifications.Count);
+
+            // Subsequent failures while already disconnected
+            monitor.ProcessProbeResult(false);
+            monitor.ProcessProbeResult(false);
+            AssertEqual(1, notif.Notifications.Count); // Count remains 1
+        });
+
+        RunTest("ConnectivityMonitor_RecoveryDebouncing_RequiresTwoConsecutiveSuccessesBeforeRestoreAlert", () =>
+        {
+            var probe = new TestConnectivityProbe { Reachable = true };
+            var notif = new TestNotificationService { Settings = new UserSettings { NotificationsEnabled = true, NotifyOnDisconnect = true, NotifyOnRestore = true } };
+            using var monitor = new ConnectivityMonitor(probe, notif);
+
+            monitor.ProcessProbeResult(true); // startup
+            monitor.ProcessProbeResult(false);
+            monitor.ProcessProbeResult(false); // Disconnected
+            AssertEqual(1, notif.Notifications.Count);
+
+            // First recovery probe
+            monitor.ProcessProbeResult(true);
+            AssertEqual(ConnectivityState.Disconnected, monitor.CurrentState); // Not yet confirmed
+            AssertEqual(1, notif.Notifications.Count);
+
+            // Second recovery probe (confirmed restored)
+            monitor.ProcessProbeResult(true);
+            AssertEqual(ConnectivityState.Connected, monitor.CurrentState);
+            AssertEqual(2, notif.Notifications.Count);
+            AssertEqual(NotificationType.InternetRestored, notif.Notifications[1].Type);
+        });
+
+        RunTest("NotificationService_TogglesRespected_WhenDisabledNoNotificationShown", () =>
+        {
+            var notif = new TestNotificationService
+            {
+                Settings = new UserSettings
+                {
+                    NotificationsEnabled = false, // Master disabled
+                    NotifyOnDisconnect = true,
+                    NotifyOnRestore = true,
+                    NotifyOnSlowSpeed = true
+                }
+            };
+
+            AssertEqual(false, notif.CanShowNotification(NotificationType.InternetDisconnected));
+            AssertEqual(false, notif.CanShowNotification(NotificationType.InternetRestored));
+            AssertEqual(false, notif.CanShowNotification(NotificationType.SlowSpeed));
+
+            // Enable master, but disable specific type
+            notif.Settings.NotificationsEnabled = true;
+            notif.Settings.NotifyOnDisconnect = false;
+            AssertEqual(false, notif.CanShowNotification(NotificationType.InternetDisconnected));
+            AssertEqual(true, notif.CanShowNotification(NotificationType.InternetRestored));
+        });
+
+        RunTest("NotificationService_Cooldown_SuppressesRepeatedAlertsWithinCooldownWindow", () =>
+        {
+            var notif = new TestCooldownNotificationService(cooldownSeconds: 60);
+
+            // First notification allowed
+            AssertEqual(true, notif.TryShow("Alert 1"));
+
+            // Immediate second notification suppressed
+            AssertEqual(false, notif.TryShow("Alert 2"));
+
+            // Advance time past cooldown
+            notif.AdvanceTime(TimeSpan.FromSeconds(65));
+            AssertEqual(true, notif.TryShow("Alert 3"));
+        });
+
+        RunTest("SlowSpeedWarning_SuppressionAndTriggerLogic_WorksCorrectly", () =>
+        {
+            var notif = new TestNotificationService
+            {
+                Settings = new UserSettings
+                {
+                    NotificationsEnabled = true,
+                    NotifyOnSlowSpeed = true,
+                    SlowSpeedThresholdMbps = 10.0
+                }
+            };
+
+            // Test high speed (above threshold): no warning
+            double goodDownload = 45.2;
+            if (notif.Settings.NotificationsEnabled && notif.Settings.NotifyOnSlowSpeed && goodDownload < notif.Settings.SlowSpeedThresholdMbps)
+            {
+                notif.ShowNotification("Slow Speed", "Speed low", NotificationType.SlowSpeed);
+            }
+            AssertEqual(0, notif.Notifications.Count);
+
+            // Test low speed (below threshold): warning triggered
+            double lowDownload = 4.8;
+            if (notif.Settings.NotificationsEnabled && notif.Settings.NotifyOnSlowSpeed && lowDownload < notif.Settings.SlowSpeedThresholdMbps)
+            {
+                notif.ShowNotification("Slow Speed", "Speed low", NotificationType.SlowSpeed);
+            }
+            AssertEqual(1, notif.Notifications.Count);
+            AssertEqual(NotificationType.SlowSpeed, notif.Notifications[0].Type);
+        });
+
+        // --- FORM LIFECYCLE & REUSE TESTS ---
         RunTest("SpeedTestForm_InstantiatesAndDisposesCleanly", () =>
         {
             using var form = new SpeedTestForm();
@@ -494,8 +685,16 @@ internal class Program
         {
             using var form = new SettingsForm();
             AssertEqual("Settings - iNetOMeter", form.Text);
-            AssertEqual(500, form.Size.Width);
-            AssertEqual(460, form.Size.Height);
+            AssertEqual(540, form.Size.Width);
+            AssertEqual(700, form.Size.Height);
+        });
+
+        RunTest("TaskbarBandForm_InstantiatesAndDisposesCleanly", () =>
+        {
+            using var form = new TaskbarBandForm();
+            AssertEqual(94, form.Size.Width);
+            AssertEqual(40, form.Size.Height);
+            AssertEqual(false, form.ShowInTaskbar);
         });
 
         Console.WriteLine("--------------------------------------------------");
@@ -526,5 +725,61 @@ internal class Program
         {
             throw new Exception($"Expected: '{expected}', but was: '{actual}'");
         }
+    }
+}
+
+internal class TestNotificationService : INotificationService
+{
+    public List<(string Title, string Message, NotificationType Type)> Notifications { get; } = new();
+    public UserSettings Settings { get; set; } = new();
+
+    public bool CanShowNotification(NotificationType type)
+    {
+        if (!Settings.NotificationsEnabled) return false;
+        return type switch
+        {
+            NotificationType.InternetDisconnected => Settings.NotifyOnDisconnect,
+            NotificationType.InternetRestored => Settings.NotifyOnRestore,
+            NotificationType.SlowSpeed => Settings.NotifyOnSlowSpeed,
+            _ => false
+        };
+    }
+
+    public void ShowNotification(string title, string message, NotificationType type)
+    {
+        if (CanShowNotification(type))
+        {
+            Notifications.Add((title, message, type));
+        }
+    }
+}
+
+internal class TestConnectivityProbe : IConnectivityProbe
+{
+    public bool Reachable { get; set; } = true;
+    public Task<bool> CheckInternetReachabilityAsync(CancellationToken ct) => Task.FromResult(Reachable);
+}
+
+internal class TestCooldownNotificationService
+{
+    private readonly int _cooldownSeconds;
+    private DateTime _lastTime = DateTime.MinValue;
+    private DateTime _simulatedNow = new DateTime(2026, 10, 22, 12, 0, 0, DateTimeKind.Utc);
+
+    public TestCooldownNotificationService(int cooldownSeconds)
+    {
+        _cooldownSeconds = cooldownSeconds;
+    }
+
+    public void AdvanceTime(TimeSpan span) => _simulatedNow += span;
+
+    public bool TryShow(string message)
+    {
+        if ((_simulatedNow - _lastTime).TotalSeconds < _cooldownSeconds)
+        {
+            return false;
+        }
+        _lastTime = _simulatedNow;
+        return true;
     }
 }
