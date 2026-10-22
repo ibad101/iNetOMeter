@@ -22,3 +22,10 @@ $RECYCLE.BIN/
 *.msi
 *.msm
 *.msp
+
+# Release and packaging artifacts
+publish/
+dist/
+*.zip
+*.nupkg
+*.snupkg

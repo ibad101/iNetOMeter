@@ -44,6 +44,12 @@ public class SettingsForm : Form
         ForeColor = TextWhite;
         Font = new Font("Segoe UI", 9f, FontStyle.Regular, GraphicsUnit.Point);
 
+        string iconPath = System.IO.Path.Combine(AppContext.BaseDirectory, "assets", "app.ico");
+        if (System.IO.File.Exists(iconPath))
+        {
+            try { Icon = new Icon(iconPath); } catch { }
+        }
+
         var current = SettingsService.Instance.Current;
 
         // --- 1. HEADER ---
