@@ -1,8 +1,11 @@
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
+using System.IO;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace iNetOMeter;
 
@@ -47,6 +50,8 @@ public class TaskbarBandForm : Form
     private readonly NativeMethods.WinEventDelegate _winEventDelegate;
     private readonly uint _taskbarCreatedMsg;
     private readonly ConnectivityMonitor _connectivityMonitor;
+    private readonly WiFiAssistant _wifiAssistant;
+    private uint _explorerPid;
 
     public TaskbarBandForm()
     {
@@ -54,6 +59,7 @@ public class TaskbarBandForm : Form
         _taskbarTracker = new TaskbarTracker();
         _taskbarCreatedMsg = NativeMethods.RegisterWindowMessage("TaskbarCreated");
         _connectivityMonitor = new ConnectivityMonitor();
+        _wifiAssistant = new WiFiAssistant(WiFiService.Instance, _connectivityMonitor);
 
         // Window styling for native taskbar integration
         FormBorderStyle = FormBorderStyle.None;
@@ -92,8 +98,10 @@ public class TaskbarBandForm : Form
         _divPen = new Pen(DividerColor, 1f);
         _borderPen = new Pen(BorderColor, 1f);
 
-        // Stage 4 Context menu: Run Speed Test, View Last 5 Tests, Settings, Exit
-        _contextMenu = new ContextMenuStrip();
+        _contextMenu = new ContextMenuStrip
+        {
+            AutoClose = true
+        };
         var titleItem = new ToolStripMenuItem("iNetOMeter") { Enabled = false };
 
         var speedTestItem = new ToolStripMenuItem("Run Speed Test", null, (_, _) => SpeedTestForm.ShowOrActivate())
@@ -103,6 +111,7 @@ public class TaskbarBandForm : Form
 
         var historyItem = new ToolStripMenuItem("View Last 5 Tests", null, (_, _) => HistoryForm.ShowOrActivate());
         var settingsItem = new ToolStripMenuItem("Settings", null, (_, _) => SettingsForm.ShowOrActivate());
+        var uninstallItem = new ToolStripMenuItem("Uninstall iNetOMeter", null, (_, _) => OnUninstallClicked());
         var exitItem = new ToolStripMenuItem("Exit iNetOMeter", null, (_, _) => Application.Exit());
 
         _contextMenu.Items.Add(titleItem);
@@ -111,7 +120,28 @@ public class TaskbarBandForm : Form
         _contextMenu.Items.Add(historyItem);
         _contextMenu.Items.Add(settingsItem);
         _contextMenu.Items.Add(new ToolStripSeparator());
+        _contextMenu.Items.Add(uninstallItem);
         _contextMenu.Items.Add(exitItem);
+
+        // Microsoft KB135788 tray menu pattern:
+        // Set foreground window on opening and post WM_NULL on closed so outside clicks
+        // and Escape cleanly dismiss the menu, without aggressive repeated activation tricks.
+        _contextMenu.Opening += (_, _) =>
+        {
+            if (IsHandleCreated)
+            {
+                NativeMethods.SetForegroundWindow(Handle);
+            }
+        };
+
+        _contextMenu.Closed += (_, _) =>
+        {
+            if (IsHandleCreated)
+            {
+                NativeMethods.PostMessage(Handle, NativeMethods.WM_NULL, IntPtr.Zero, IntPtr.Zero);
+            }
+        };
+
         ContextMenuStrip = _contextMenu;
 
         // Double click launches the Internet Speed Test
@@ -181,6 +211,7 @@ public class TaskbarBandForm : Form
             if (_taskbarTracker.TryGetTaskbarWindows(out IntPtr hTray, out _))
             {
                 NativeMethods.GetWindowThreadProcessId(hTray, out uint explorerPid);
+                _explorerPid = explorerPid;
                 _hWinEventHook = NativeMethods.SetWinEventHook(
                     NativeMethods.EVENT_OBJECT_LOCATIONCHANGE,
                     NativeMethods.EVENT_OBJECT_LOCATIONCHANGE,
@@ -212,12 +243,68 @@ public class TaskbarBandForm : Form
         if (_isWidgetShowing)
         {
             Invalidate();
+            EnsureMeterVisibleAboveTaskbar();
+        }
+    }
+
+    private void EnsureMeterVisibleAboveTaskbar()
+    {
+        if (_contextMenu.Visible || !IsHandleCreated || IsDisposed || !_isWidgetShowing)
+        {
+            return;
+        }
+
+        // 1. Recover from native hidden state (Win+D, lock screen, display sleep)
+        if (!NativeMethods.IsWindowVisible(Handle))
+        {
+            _lastBounds = Rectangle.Empty;
+            _isWidgetShowing = false;
+            NativeMethods.SetWindowPos(
+                Handle,
+                NativeMethods.HWND_TOPMOST,
+                0, 0, 0, 0,
+                NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW
+            );
+            _isWidgetShowing = true;
+            return;
+        }
+
+        // 2. Least intrusive check: only restore if Explorer's taskbar is actively covering our window.
+        // Never cover third-party windows, popups, or fullscreen applications.
+        if (_lastBounds.Width > 0 && _lastBounds.Height > 0)
+        {
+            if (_explorerPid == 0 && _taskbarTracker.TryGetTaskbarWindows(out IntPtr hTray, out _))
+            {
+                NativeMethods.GetWindowThreadProcessId(hTray, out _explorerPid);
+            }
+
+            Point centerPt = new Point(_lastBounds.Left + _lastBounds.Width / 2, _lastBounds.Top + _lastBounds.Height / 2);
+            IntPtr topWnd = NativeMethods.WindowFromPoint(centerPt);
+            if (topWnd != IntPtr.Zero && topWnd != Handle)
+            {
+                NativeMethods.GetWindowThreadProcessId(topWnd, out uint topPid);
+                if (topPid != 0 && topPid == _explorerPid)
+                {
+                    NativeMethods.SetWindowPos(
+                        Handle,
+                        NativeMethods.HWND_TOPMOST,
+                        0, 0, 0, 0,
+                        NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW
+                    );
+                }
+            }
         }
     }
 
     private void SyncTaskbarPositionAndVisibility()
     {
         if (!IsHandleCreated || IsDisposed) return;
+
+        // If the context menu is open, never disturb or reposition or hide anything while user interacts with menu
+        if (_contextMenu.Visible)
+        {
+            return;
+        }
 
         if (!_taskbarTracker.TryGetTaskbarState(out Rectangle trayRect, out Rectangle notifyRect, out Rectangle monitorRect, out TaskbarEdge edge, out bool isTaskbarVisible))
         {
@@ -226,10 +313,11 @@ public class TaskbarBandForm : Form
 
         if (!isTaskbarVisible)
         {
-            // Taskbar is currently auto-hidden offscreen: hide meter immediately
+            // Taskbar is legitimately auto-hidden offscreen: hide meter immediately
             if (_isWidgetShowing)
             {
                 _isWidgetShowing = false;
+                _lastBounds = Rectangle.Empty; // Reset so when taskbar returns, it will always reposition and show!
                 NativeMethods.SetWindowPos(
                     Handle,
                     IntPtr.Zero,
@@ -259,7 +347,16 @@ public class TaskbarBandForm : Form
             );
             Invalidate();
         }
+        else
+        {
+            // If already showing and at target bounds, ensure the native window hasn't been hidden
+            // by a temporary event (such as Win+D / Show Desktop or monitor sleep)
+            EnsureMeterVisibleAboveTaskbar();
+        }
     }
+
+    internal bool IsContextMenuVisible => _contextMenu.Visible;
+    internal ContextMenuStrip MenuStrip => _contextMenu;
 
     protected override void WndProc(ref Message m)
     {
@@ -271,11 +368,15 @@ public class TaskbarBandForm : Form
                 NativeMethods.UnhookWinEvent(_hWinEventHook);
                 _hWinEventHook = IntPtr.Zero;
             }
+            _lastBounds = Rectangle.Empty;
+            _isWidgetShowing = false;
+            _explorerPid = 0;
             InstallWinEventHook();
             SyncTaskbarPositionAndVisibility();
         }
         else if (m.Msg == NativeMethods.WM_DISPLAYCHANGE || m.Msg == NativeMethods.WM_DPICHANGED)
         {
+            _lastBounds = Rectangle.Empty;
             SyncTaskbarPositionAndVisibility();
         }
 
@@ -383,9 +484,155 @@ public class TaskbarBandForm : Form
 
             _contextMenu.Dispose();
 
+            _wifiAssistant.Dispose();
             _connectivityMonitor.Dispose();
             WindowsNotificationService.Instance.Dispose();
         }
         base.Dispose(disposing);
+    }
+
+    public static bool IsInstalledEnvironment(string appDirectory, string? registryInstallLocation = null)
+    {
+        string localPrograms = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Programs",
+            "iNetOMeter"
+        ).TrimEnd('\\', '/');
+
+        string normalizedAppDir = appDirectory.TrimEnd('\\', '/');
+
+        if (normalizedAppDir.Equals(localPrograms, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrEmpty(registryInstallLocation))
+        {
+            string normalizedRegDir = registryInstallLocation.TrimEnd('\\', '/');
+            if (normalizedAppDir.Equals(normalizedRegDir, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        if (File.Exists(Path.Combine(appDirectory, "unins000.exe")))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private void OnUninstallClicked()
+    {
+        string appDir = AppContext.BaseDirectory;
+        string? regInstallLocation = null;
+        string? regUninstallString = null;
+
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\iNetOMeter");
+            regInstallLocation = key?.GetValue("InstallLocation") as string;
+            regUninstallString = key?.GetValue("UninstallString") as string;
+        }
+        catch { }
+
+        bool isInstalled = IsInstalledEnvironment(appDir, regInstallLocation);
+
+        if (!isInstalled)
+        {
+            var portResult = MessageBox.Show(
+                "iNetOMeter is currently running in portable mode (not installed through Windows setup).\n\n" +
+                "Because it was extracted rather than installed, there are no system uninstaller files.\n\n" +
+                $"To remove iNetOMeter:\n1. Exit the application.\n2. Delete this folder:\n   {appDir}\n\n" +
+                "Your settings and test history in %LOCALAPPDATA%\\iNetOMeter will be preserved unless manually deleted.\n\n" +
+                "Would you like to exit iNetOMeter now?",
+                "Uninstall iNetOMeter (Portable Mode)",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Information);
+
+            if (portResult == DialogResult.Yes)
+            {
+                Application.Exit();
+            }
+            return;
+        }
+
+        // Installed mode confirmation dialog
+        var confirmResult = MessageBox.Show(
+            "Are you sure you want to uninstall iNetOMeter from your computer?\n\n" +
+            "This will remove the application, Start Menu shortcut, and system registration.\n\n" +
+            "Your settings and test history in %LOCALAPPDATA%\\iNetOMeter will be preserved by default.\n\n" +
+            "Click Yes to proceed with uninstallation, or No to cancel.",
+            "Uninstall iNetOMeter",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning);
+
+        if (confirmResult != DialogResult.Yes)
+        {
+            return; // Cancel makes no changes
+        }
+
+        // Locate uninstaller
+        string innoUninstaller = Path.Combine(appDir, "unins000.exe");
+        string psUninstaller = Path.Combine(appDir, "Uninstall-iNetOMeter.ps1");
+
+        try
+        {
+            if (File.Exists(innoUninstaller))
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = innoUninstaller,
+                    UseShellExecute = true
+                };
+                Process.Start(psi);
+                Application.Exit();
+                return;
+            }
+
+            if (File.Exists(psUninstaller))
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = $"-ExecutionPolicy Bypass -NoProfile -WindowStyle Normal -Command \"Start-Sleep -Milliseconds 800; & '{psUninstaller}'\"",
+                    UseShellExecute = true
+                };
+                Process.Start(psi);
+                Application.Exit();
+                return;
+            }
+
+            // Fallback to registry UninstallString if defined
+            if (!string.IsNullOrEmpty(regUninstallString))
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = $"-ExecutionPolicy Bypass -NoProfile -WindowStyle Normal -Command \"Start-Sleep -Milliseconds 800; {regUninstallString}\"",
+                    UseShellExecute = true
+                };
+                Process.Start(psi);
+                Application.Exit();
+                return;
+            }
+
+            MessageBox.Show(
+                "Could not locate the uninstaller script or executable in the application directory.\n\n" +
+                "You can uninstall iNetOMeter through Windows Settings > Apps & Features.",
+                "Uninstaller Not Found",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"Failed to start the uninstaller: {ex.Message}\n\n" +
+                "You can uninstall iNetOMeter through Windows Settings > Apps & Features.",
+                "Uninstall Error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
     }
 }

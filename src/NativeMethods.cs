@@ -30,6 +30,13 @@ internal static class NativeMethods
 
     public const int WM_DISPLAYCHANGE = 0x007E;
     public const int WM_DPICHANGED = 0x02E0;
+    public const int WM_NULL = 0x0000;
+    public const int WM_ACTIVATEAPP = 0x001C;
+    public const int WM_RBUTTONDOWN = 0x0204;
+
+    public const uint ABM_GETSTATE = 0x00000004;
+    public const uint ABS_AUTOHIDE = 0x00000001;
+    public const uint ABS_ALWAYSONTOP = 0x00000002;
 
     public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
 
@@ -157,6 +164,35 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     public static extern uint RegisterWindowMessage(string lpString);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr WindowFromPoint(Point point);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct APPBARDATA
+    {
+        public int cbSize;
+        public IntPtr hWnd;
+        public uint uCallbackMessage;
+        public uint uEdge;
+        public RECT rc;
+        public IntPtr lParam;
+    }
+
+    [DllImport("shell32.dll")]
+    public static extern UIntPtr SHAppBarMessage(uint dwMessage, ref APPBARDATA pData);
 
     public static bool EnableTaskbarBlur(IntPtr hwnd, uint tintColor = 0xC8101010)
     {

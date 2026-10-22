@@ -101,8 +101,26 @@ public class TaskbarTracker
         }
 
         edge = GetTaskbarEdge(trayRect, monitorRect);
-        isVisible = IsTaskbarVisible(trayRect, monitorRect, edge);
+        bool autoHideEnabled = IsTaskbarAutoHideEnabled();
+        // If auto-hide is disabled on Windows, the taskbar is permanently visible.
+        // If auto-hide is enabled, evaluate whether it is currently revealed or slid offscreen.
+        isVisible = !autoHideEnabled || IsTaskbarVisible(trayRect, monitorRect, edge, true);
         return true;
+    }
+
+    public static bool IsTaskbarAutoHideEnabled()
+    {
+        try
+        {
+            var data = new NativeMethods.APPBARDATA();
+            data.cbSize = Marshal.SizeOf(data);
+            ulong state = (ulong)NativeMethods.SHAppBarMessage(NativeMethods.ABM_GETSTATE, ref data);
+            return (state & NativeMethods.ABS_AUTOHIDE) != 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public Rectangle? GetTargetBounds(int desiredWidth = 94, int desiredHeight = 40, bool requireVisible = false)
@@ -134,8 +152,14 @@ public class TaskbarTracker
         }
     }
 
-    public static bool IsTaskbarVisible(Rectangle trayRect, Rectangle monitorRect, TaskbarEdge edge)
+    public static bool IsTaskbarVisible(Rectangle trayRect, Rectangle monitorRect, TaskbarEdge edge, bool isAutoHideEnabled = true)
     {
+        // If auto-hide is not enabled, the taskbar does not slide offscreen
+        if (!isAutoHideEnabled)
+        {
+            return !trayRect.IsEmpty && trayRect.Width > 0 && trayRect.Height > 0;
+        }
+
         // When Windows auto-hides the taskbar, only a 2px-3px sliver remains on screen.
         // If fewer than 10px of the taskbar are within the monitor boundary, it is hidden.
         const int threshold = 10;

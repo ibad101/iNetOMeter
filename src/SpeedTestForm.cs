@@ -157,6 +157,8 @@ public class SpeedTestForm : Form
         }
     }
 
+    public static bool IsTestActive => _activeInstance != null && !_activeInstance.IsDisposed && _activeInstance._isRunning;
+
     private void OnAnimTimerTick(object? sender, EventArgs e)
     {
         // Smoothly interpolate gauge towards target speed

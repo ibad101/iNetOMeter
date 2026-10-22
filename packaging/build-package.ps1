@@ -18,6 +18,10 @@ Write-Host "==================================================" -ForegroundColor
 Write-Host "  iNetOMeter Release Packaging Script (v$Version)" -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
 
+# Stop any running instances to avoid file locks
+Get-Process -Name "iNetOMeter" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 500
+
 # 1. Run Automated Tests
 if (-not $SkipTests) {
     Write-Host "`n[1/5] Running automated tests..." -ForegroundColor Yellow
@@ -73,6 +77,8 @@ Get-ChildItem -Path $PublishDir -Filter "*.pdb" -Recurse | Remove-Item -Force
 Copy-Item (Join-Path $RootDir "LICENSE") -Destination $PublishDir -Force
 Copy-Item (Join-Path $RootDir "THIRD-PARTY-NOTICES.md") -Destination $PublishDir -Force
 Copy-Item (Join-Path $RootDir "QUICKSTART.md") -Destination $PublishDir -Force
+if (Test-Path (Join-Path $RootDir "README.md")) { Copy-Item (Join-Path $RootDir "README.md") -Destination $PublishDir -Force }
+if (Test-Path (Join-Path $RootDir "CHANGELOG.md")) { Copy-Item (Join-Path $RootDir "CHANGELOG.md") -Destination $PublishDir -Force }
 
 $publishAssets = Join-Path $PublishDir "assets"
 if (-not (Test-Path $publishAssets)) { New-Item -ItemType Directory -Path $publishAssets -Force | Out-Null }
@@ -151,6 +157,8 @@ $requiredEntries = @(
     "LICENSE",
     "THIRD-PARTY-NOTICES.md",
     "QUICKSTART.md",
+    "README.md",
+    "CHANGELOG.md",
     "assets/app.ico",
     "Install-iNetOMeter.ps1",
     "Uninstall-iNetOMeter.ps1"

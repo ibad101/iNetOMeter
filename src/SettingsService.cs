@@ -27,6 +27,12 @@ public class UserSettings
     public double SlowSpeedThresholdMbps { get; set; } = 5.0;
     public int NotificationCooldownSeconds { get; set; } = 60;
 
+    // Smart Wi-Fi Assistant (default: OFF, opt-in)
+    public bool WiFiAssistantEnabled { get; set; } = false;
+    public int WiFiWeakSignalThresholdPercent { get; set; } = 30;
+    public int WiFiSignalHysteresisPercent { get; set; } = 10;
+    public int WiFiCooldownSeconds { get; set; } = 300;
+
     public UserSettings Clone() => new()
     {
         StartWithWindows = StartWithWindows,
@@ -38,7 +44,11 @@ public class UserSettings
         NotifyOnRestore = NotifyOnRestore,
         NotifyOnSlowSpeed = NotifyOnSlowSpeed,
         SlowSpeedThresholdMbps = SlowSpeedThresholdMbps,
-        NotificationCooldownSeconds = NotificationCooldownSeconds
+        NotificationCooldownSeconds = NotificationCooldownSeconds,
+        WiFiAssistantEnabled = WiFiAssistantEnabled,
+        WiFiWeakSignalThresholdPercent = WiFiWeakSignalThresholdPercent,
+        WiFiSignalHysteresisPercent = WiFiSignalHysteresisPercent,
+        WiFiCooldownSeconds = WiFiCooldownSeconds
     };
 }
 
@@ -116,6 +126,21 @@ public class SettingsService
             10,
             3600
         );
+        newSettings.WiFiWeakSignalThresholdPercent = Math.Clamp(
+            newSettings.WiFiWeakSignalThresholdPercent,
+            15,
+            60
+        );
+        newSettings.WiFiSignalHysteresisPercent = Math.Clamp(
+            newSettings.WiFiSignalHysteresisPercent,
+            5,
+            30
+        );
+        newSettings.WiFiCooldownSeconds = Math.Clamp(
+            newSettings.WiFiCooldownSeconds,
+            60,
+            1800
+        );
 
         lock (_lock)
         {
@@ -183,6 +208,21 @@ public class SettingsService
                         loaded.NotificationCooldownSeconds,
                         10,
                         3600
+                    );
+                    loaded.WiFiWeakSignalThresholdPercent = Math.Clamp(
+                        loaded.WiFiWeakSignalThresholdPercent > 0 ? loaded.WiFiWeakSignalThresholdPercent : 30,
+                        15,
+                        60
+                    );
+                    loaded.WiFiSignalHysteresisPercent = Math.Clamp(
+                        loaded.WiFiSignalHysteresisPercent > 0 ? loaded.WiFiSignalHysteresisPercent : 10,
+                        5,
+                        30
+                    );
+                    loaded.WiFiCooldownSeconds = Math.Clamp(
+                        loaded.WiFiCooldownSeconds > 0 ? loaded.WiFiCooldownSeconds : 300,
+                        60,
+                        1800
                     );
                     _current = loaded;
                 }

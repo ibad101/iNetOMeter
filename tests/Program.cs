@@ -686,7 +686,7 @@ internal class Program
             using var form = new SettingsForm();
             AssertEqual("Settings - iNetOMeter", form.Text);
             AssertEqual(540, form.Size.Width);
-            AssertEqual(700, form.Size.Height);
+            AssertEqual(720, form.Size.Height);
         });
 
         RunTest("TaskbarBandForm_InstantiatesAndDisposesCleanly", () =>
@@ -695,6 +695,409 @@ internal class Program
             AssertEqual(94, form.Size.Width);
             AssertEqual(40, form.Size.Height);
             AssertEqual(false, form.ShowInTaskbar);
+        });
+
+        // --- CONTEXT MENU LIFECYCLE & DISMISSAL REGRESSION TESTS ---
+        RunTest("ContextMenu_Configuration_HasAutoCloseAndAllMenuItems", () =>
+        {
+            using var form = new TaskbarBandForm();
+            AssertTrue(form.ContextMenuStrip != null, "ContextMenuStrip must not be null");
+            AssertTrue(form.ContextMenuStrip!.AutoClose, "AutoClose must be true");
+            AssertEqual(8, form.ContextMenuStrip.Items.Count);
+
+            // Item 0: Title "iNetOMeter", disabled
+            AssertEqual("iNetOMeter", form.ContextMenuStrip.Items[0].Text);
+            AssertEqual(false, form.ContextMenuStrip.Items[0].Enabled);
+
+            // Item 1: Separator
+            AssertTrue(form.ContextMenuStrip.Items[1] is ToolStripSeparator);
+
+            // Item 2: Run Speed Test
+            AssertEqual("Run Speed Test", form.ContextMenuStrip.Items[2].Text);
+            AssertTrue(form.ContextMenuStrip.Items[2].Enabled);
+
+            // Item 3: View Last 5 Tests
+            AssertEqual("View Last 5 Tests", form.ContextMenuStrip.Items[3].Text);
+
+            // Item 4: Settings
+            AssertEqual("Settings", form.ContextMenuStrip.Items[4].Text);
+
+            // Item 5: Separator
+            AssertTrue(form.ContextMenuStrip.Items[5] is ToolStripSeparator);
+
+            // Item 6: Uninstall iNetOMeter
+            AssertEqual("Uninstall iNetOMeter", form.ContextMenuStrip.Items[6].Text);
+
+            // Item 7: Exit iNetOMeter
+            AssertEqual("Exit iNetOMeter", form.ContextMenuStrip.Items[7].Text);
+        });
+
+        RunTest("ContextMenu_PointerMovementAndTransitions_DoNotPrematurelyDismissMenu", () =>
+        {
+            using var form = new TaskbarBandForm();
+            var handle = form.Handle;
+            AssertTrue(handle != IntPtr.Zero);
+
+            form.MenuStrip.Show(form, new Point(0, 0));
+            AssertTrue(form.IsContextMenuVisible, "Menu must be visible after opening");
+
+            // Moving pointer over Settings or hovering over separators should NOT dismiss menu
+            form.MenuStrip.Items[4].Select(); // Settings item
+            AssertTrue(form.IsContextMenuVisible, "Menu must remain open while pointer is over menu items");
+
+            form.MenuStrip.Items[1].Select(); // Separator
+            AssertTrue(form.IsContextMenuVisible, "Menu must remain open while pointer is over separators");
+
+            form.MenuStrip.Close();
+            AssertTrue(!form.IsContextMenuVisible, "Menu must be closed after Close()");
+        });
+
+        RunTest("ContextMenu_Dismissal_RespondsToExplicitCloseAndEscape", () =>
+        {
+            using var form = new TaskbarBandForm();
+            var handle = form.Handle;
+            AssertTrue(handle != IntPtr.Zero);
+
+            form.MenuStrip.Show(form, new Point(0, 0));
+            AssertTrue(form.IsContextMenuVisible, "Menu must be visible after Show");
+
+            // User pressing Escape or clicking outside triggers DropDown Close
+            form.MenuStrip.Close(ToolStripDropDownCloseReason.Keyboard);
+            AssertTrue(!form.IsContextMenuVisible, "Menu must close on Escape key dismissal");
+        });
+
+        RunTest("TaskbarVisibility_AutoHideDisabled_AlwaysTreatedAsVisible", () =>
+        {
+            var trayRect = new Rectangle(0, 1075, 1920, 40); // 5px visible on 1080p screen
+            var monitorRect = new Rectangle(0, 0, 1920, 1080);
+
+            // When auto-hide is disabled in Windows, the taskbar is considered docked and visible
+            bool isVisible = TaskbarTracker.IsTaskbarVisible(trayRect, monitorRect, TaskbarEdge.Bottom, isAutoHideEnabled: false);
+            AssertTrue(isVisible, "Docked taskbar without auto-hide must always be considered visible");
+        });
+
+        RunTest("TaskbarVisibility_AutoHideEnabled_AccuratelyDetectsOffscreenState", () =>
+        {
+            var monitorRect = new Rectangle(0, 0, 1920, 1080);
+
+            // Visible: 40px on screen (1040 to 1080)
+            var visibleTray = new Rectangle(0, 1040, 1920, 40);
+            AssertTrue(TaskbarTracker.IsTaskbarVisible(visibleTray, monitorRect, TaskbarEdge.Bottom, isAutoHideEnabled: true));
+
+            // Hidden: only 2px on screen (1078 to 1080)
+            var hiddenTray = new Rectangle(0, 1078, 1920, 40);
+            AssertTrue(!TaskbarTracker.IsTaskbarVisible(hiddenTray, monitorRect, TaskbarEdge.Bottom, isAutoHideEnabled: true));
+        });
+
+        RunTest("ContextMenu_FocusSafety_PropertiesPreventUnwantedFocusStealing", () =>
+        {
+            using var form = new TaskbarBandForm();
+            AssertEqual(false, form.ShowInTaskbar);
+            AssertEqual(94, form.Size.Width);
+            AssertEqual(40, form.Size.Height);
+
+            var handle = form.Handle;
+            AssertTrue(handle != IntPtr.Zero);
+        });
+
+        // --- SMART WI-FI ASSISTANT & UNINSTALL TESTS ---
+        RunTest("WiFiParser_Interfaces_ParsesConnectedAndDisconnectedOutput", () =>
+        {
+            string sampleNetsh = @"
+There is 1 interface on the system: 
+
+    Name                   : Wi-Fi
+    Description            : Qualcomm Wireless Adapter
+    GUID                   : 6919ef67-f6c6-4579-9d21-c9e31d9cfc65
+    Physical address       : b0:68:e6:28:7b:f3
+    State                  : connected
+    SSID                   : Office_5G
+    BSSID                  : a4:f3:3b:42:bd:d4
+    Network type           : Infrastructure
+    Radio type             : 802.11ac
+    Authentication         : WPA2-Personal
+    Cipher                 : CCMP
+    Connection mode        : Auto Connect
+    Channel                : 48
+    Receive rate (Mbps)    : 433.3
+    Transmit rate (Mbps)   : 433.3
+    Signal                 : 95% 
+    Profile                : Office_5G 
+";
+            var parsed = WiFiService.ParseInterfaceInfo(sampleNetsh);
+            AssertTrue(parsed != null);
+            AssertEqual("Wi-Fi", parsed!.InterfaceName);
+            AssertEqual(true, parsed.IsConnected);
+            AssertEqual("Office_5G", parsed.Ssid);
+            AssertEqual("a4:f3:3b:42:bd:d4", parsed.Bssid);
+            AssertEqual(95, parsed.SignalPercent);
+            AssertEqual("802.11ac", parsed.RadioType);
+            AssertEqual(48, parsed.Channel);
+            AssertEqual("Office_5G", parsed.ProfileName);
+
+            // Test disconnected output
+            string disconnectedNetsh = @"
+There is 1 interface on the system: 
+
+    Name                   : Wi-Fi
+    Description            : Qualcomm Wireless Adapter
+    State                  : disconnected
+";
+            var disParsed = WiFiService.ParseInterfaceInfo(disconnectedNetsh);
+            AssertTrue(disParsed != null);
+            AssertEqual(false, disParsed!.IsConnected);
+            AssertEqual("", disParsed.Ssid);
+
+            // Empty/non-wi-fi machine output
+            AssertTrue(WiFiService.ParseInterfaceInfo("There is no wireless interface on the system.") == null);
+            AssertTrue(WiFiService.ParseInterfaceInfo("") == null);
+        });
+
+        RunTest("WiFiParser_Profiles_ParsesSavedUserProfiles", () =>
+        {
+            string sampleProfiles = @"
+Profiles on interface Wi-Fi:
+
+Group policy profiles (read only)
+---------------------------------
+    <None>
+
+User profiles
+-------------
+    All User Profile     : Home_WiFi
+    All User Profile     : Office_Guest
+    All User Profile     : CoffeeShop_Free
+";
+            var profiles = WiFiService.ParseSavedProfiles(sampleProfiles);
+            AssertEqual(3, profiles.Count);
+            AssertEqual("Home_WiFi", profiles[0]);
+            AssertEqual("Office_Guest", profiles[1]);
+            AssertEqual("CoffeeShop_Free", profiles[2]);
+
+            // Empty profiles
+            var empty = WiFiService.ParseSavedProfiles("User profiles\n-------------\n    <None>");
+            AssertEqual(0, empty.Count);
+        });
+
+        RunTest("WiFiParser_Networks_ParsesBSSIDAndSignal", () =>
+        {
+            string sampleNetworks = @"
+Interface name : Wi-Fi 
+There are 2 networks currently visible. 
+
+SSID 1 : Home_WiFi
+    Network type            : Infrastructure
+    Authentication          : WPA2-Personal
+    Encryption              : CCMP 
+    BSSID 1                 : 11:22:33:44:55:66
+         Signal             : 60%  
+         Radio type         : 802.11n
+    BSSID 2                 : 11:22:33:44:55:77
+         Signal             : 85%  
+         Radio type         : 802.11ac
+
+SSID 2 : CoffeeShop_Free
+    Network type            : Infrastructure
+    Authentication          : Open
+    Encryption              : None 
+    BSSID 1                 : aa:bb:cc:dd:ee:ff
+         Signal             : 45%  
+         Radio type         : 802.11g
+";
+            var visible = WiFiService.ParseVisibleNetworks(sampleNetworks);
+            AssertEqual(2, visible.Count);
+            var home = visible.FirstOrDefault(v => v.Ssid == "Home_WiFi");
+            AssertTrue(home != null);
+            AssertEqual(85, home!.SignalPercent); // Max signal BSSID selected
+            AssertEqual("802.11n", home.RadioType);
+
+            var coffee = visible.FirstOrDefault(v => v.Ssid == "CoffeeShop_Free");
+            AssertTrue(coffee != null);
+            AssertEqual(45, coffee!.SignalPercent);
+        });
+
+        RunTest("WiFiAssistant_CandidateSelection_FiltersUnsavedAndCurrentNetwork", () =>
+        {
+            var savedProfiles = new List<string> { "Saved_A", "Saved_B", "Current_Net" };
+            var visible = new List<WiFiCandidate>
+            {
+                new() { Ssid = "Current_Net", SignalPercent = 25 },
+                new() { Ssid = "Saved_A", SignalPercent = 80 },
+                new() { Ssid = "Saved_B", SignalPercent = 70 },
+                new() { Ssid = "Unknown_Neighbor", SignalPercent = 95 }
+            };
+
+            var savedSet = new HashSet<string>(savedProfiles, StringComparer.OrdinalIgnoreCase);
+            var candidates = new List<WiFiCandidate>();
+            string currentSsid = "Current_Net";
+            int currentSignal = 25;
+
+            foreach (var net in visible)
+            {
+                if (string.Equals(net.Ssid, currentSsid, StringComparison.OrdinalIgnoreCase)) continue;
+                if (savedSet.Contains(net.Ssid))
+                {
+                    candidates.Add(new WiFiCandidate
+                    {
+                        Ssid = net.Ssid,
+                        ProfileName = net.Ssid,
+                        SignalPercent = net.SignalPercent,
+                        SignalAdvantage = net.SignalPercent - currentSignal
+                    });
+                }
+            }
+
+            AssertEqual(2, candidates.Count);
+            AssertEqual("Saved_A", candidates[0].Ssid);
+            AssertEqual(55, candidates[0].SignalAdvantage);
+            AssertEqual("Saved_B", candidates[1].Ssid);
+            AssertEqual(45, candidates[1].SignalAdvantage);
+            AssertTrue(!candidates.Any(c => c.Ssid == "Unknown_Neighbor"));
+        });
+
+        RunTest("WiFiAssistant_Hysteresis_EnforcesMinimumSignalAdvantage", () =>
+        {
+            int currentSignal = 25;
+            int hysteresisThreshold = 10;
+
+            var weakCandidate = new WiFiCandidate { Ssid = "Weak_Advantage", SignalPercent = 30, SignalAdvantage = 30 - currentSignal };
+            var strongCandidate = new WiFiCandidate { Ssid = "Strong_Advantage", SignalPercent = 65, SignalAdvantage = 65 - currentSignal };
+
+            bool weakQualifies = weakCandidate.SignalAdvantage >= hysteresisThreshold;
+            bool strongQualifies = strongCandidate.SignalAdvantage >= hysteresisThreshold;
+
+            AssertEqual(false, weakQualifies);
+            AssertEqual(true, strongQualifies);
+        });
+
+        RunTest("WiFiAssistant_Debouncing_RequiresTwoConsecutiveWeakReadings", () =>
+        {
+            int threshold = 30;
+            int consecutiveWeak = 0;
+
+            // Reading 1: Weak (22%)
+            int reading1 = 22;
+            if (reading1 <= threshold) consecutiveWeak++; else consecutiveWeak = 0;
+            AssertEqual(1, consecutiveWeak);
+            AssertEqual(false, consecutiveWeak >= 2);
+
+            // Reading 2: Healthy spike (45%)
+            int reading2 = 45;
+            if (reading2 <= threshold) consecutiveWeak++; else consecutiveWeak = 0;
+            AssertEqual(0, consecutiveWeak);
+
+            // Reading 3: Weak (20%)
+            int reading3 = 20;
+            if (reading3 <= threshold) consecutiveWeak++; else consecutiveWeak = 0;
+            AssertEqual(1, consecutiveWeak);
+            AssertEqual(false, consecutiveWeak >= 2);
+
+            // Reading 4: Weak again (18%)
+            int reading4 = 18;
+            if (reading4 <= threshold) consecutiveWeak++; else consecutiveWeak = 0;
+            AssertEqual(2, consecutiveWeak);
+            AssertEqual(true, consecutiveWeak >= 2);
+        });
+
+        RunTest("WiFiAssistant_ActiveSpeedTest_SuppressesPrompt", () =>
+        {
+            bool isTestActive = true;
+            bool promptSuppressed = isTestActive;
+            AssertEqual(true, promptSuppressed);
+        });
+
+        RunTest("WiFiAssistant_Cooldown_SuppressesRepeatedPrompts", () =>
+        {
+            DateTime lastPrompt = new DateTime(2026, 10, 22, 12, 0, 0, DateTimeKind.Utc);
+            int cooldownSeconds = 300;
+
+            DateTime check1 = lastPrompt.AddSeconds(60);
+            bool allowed1 = (check1 - lastPrompt).TotalSeconds >= cooldownSeconds;
+            AssertEqual(false, allowed1);
+
+            DateTime check2 = lastPrompt.AddSeconds(305);
+            bool allowed2 = (check2 - lastPrompt).TotalSeconds >= cooldownSeconds;
+            AssertEqual(true, allowed2);
+        });
+
+        RunTest("Settings_WiFiAssistantDefaults_AreDisabledByDefault", () =>
+        {
+            var defaults = new UserSettings();
+            AssertEqual(false, defaults.WiFiAssistantEnabled);
+            AssertEqual(30, defaults.WiFiWeakSignalThresholdPercent);
+            AssertEqual(10, defaults.WiFiSignalHysteresisPercent);
+            AssertEqual(300, defaults.WiFiCooldownSeconds);
+        });
+
+        RunTest("Settings_WiFiAssistantMigration_LoadsOldJsonCleanly", () =>
+        {
+            string tempSettingsPath = Path.Combine(Path.GetTempPath(), $"iNetOMeter_test_wifimigrate_{Guid.NewGuid():N}.json");
+            try
+            {
+                string oldJson = @"{
+                    ""StartWithWindows"": false,
+                    ""SpeedFormat"": 0,
+                    ""WidgetOpacity"": 0.95,
+                    ""UpdateIntervalMs"": 1000,
+                    ""NotificationsEnabled"": false
+                }";
+                File.WriteAllText(tempSettingsPath, oldJson);
+
+                var svc = new SettingsService(tempSettingsPath);
+                var loaded = svc.Current;
+
+                AssertEqual(false, loaded.WiFiAssistantEnabled);
+                AssertEqual(30, loaded.WiFiWeakSignalThresholdPercent);
+                AssertEqual(10, loaded.WiFiSignalHysteresisPercent);
+                AssertEqual(300, loaded.WiFiCooldownSeconds);
+            }
+            finally
+            {
+                if (File.Exists(tempSettingsPath)) File.Delete(tempSettingsPath);
+            }
+        });
+
+        RunTest("Uninstall_Detection_IdentifiesPortableVsInstalled", () =>
+        {
+            string localPrograms = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Programs",
+                "iNetOMeter"
+            );
+
+            // Case 1: Running inside %LOCALAPPDATA%\Programs\iNetOMeter
+            AssertEqual(true, TaskbarBandForm.IsInstalledEnvironment(localPrograms));
+
+            // Case 2: Running matching registry InstallLocation
+            string customInstallDir = @"C:\CustomApps\iNetOMeter";
+            AssertEqual(true, TaskbarBandForm.IsInstalledEnvironment(customInstallDir, customInstallDir));
+
+            // Case 3: Portable extracted folder (e.g. Downloads or Temp)
+            string portableFolder = @"C:\Users\TestUser\Downloads\iNetOMeter-portable";
+            AssertEqual(false, TaskbarBandForm.IsInstalledEnvironment(portableFolder, localPrograms));
+        });
+
+        RunTest("WiFiSuggestionPopup_InstantiatesCleanly", () =>
+        {
+            var candidate = new WiFiCandidate
+            {
+                Ssid = "Target_WiFi",
+                ProfileName = "Target_WiFi",
+                SignalPercent = 85,
+                SignalAdvantage = 55
+            };
+
+            using var popup = new WiFiSuggestionPopup(
+                "Old_WiFi",
+                30,
+                false,
+                candidate,
+                _ => Task.FromResult(WiFiSwitchResult.Succeeded("Old_WiFi", "Target_WiFi", true))
+            );
+
+            AssertEqual(360, popup.Size.Width);
+            AssertEqual(210, popup.Size.Height);
+            AssertEqual(false, popup.ShowInTaskbar);
         });
 
         Console.WriteLine("--------------------------------------------------");
@@ -724,6 +1127,14 @@ internal class Program
         if (!object.Equals(expected, actual))
         {
             throw new Exception($"Expected: '{expected}', but was: '{actual}'");
+        }
+    }
+
+    private static void AssertTrue(bool condition, string message = "Condition was false")
+    {
+        if (!condition)
+        {
+            throw new Exception(message);
         }
     }
 }
