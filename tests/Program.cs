@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Runtime.InteropServices;
 using iNetOMeter;
 
 namespace iNetOMeter.Tests;
@@ -12,7 +13,7 @@ internal class Program
     static int Main(string[] args)
     {
         Console.WriteLine("==================================================");
-        Console.WriteLine("  iNetOMeter Automated Test Suite (Stage 1)");
+        Console.WriteLine("  iNetOMeter Automated Test Suite (Stage 1.1)");
         Console.WriteLine("==================================================");
 
         // Network Monitor FormatSpeed Tests
@@ -113,6 +114,27 @@ internal class Program
             AssertEqual(900 - desiredHeight, bounds.Y);
             AssertEqual(60, bounds.Width);
             AssertEqual(desiredHeight, bounds.Height);
+        });
+
+        // Visual Improvements & Accent Color Tests (Stage 1.1)
+        RunTest("Visuals_DownloadColor_MatchesRequirement_FF525C", () =>
+        {
+            AssertEqual(255, (int)TaskbarBandForm.DownloadColor.R);
+            AssertEqual(82, (int)TaskbarBandForm.DownloadColor.G);
+            AssertEqual(92, (int)TaskbarBandForm.DownloadColor.B);
+        });
+
+        RunTest("Visuals_UploadColor_MatchesRequirement_4CA8FF", () =>
+        {
+            AssertEqual(76, (int)TaskbarBandForm.UploadColor.R);
+            AssertEqual(168, (int)TaskbarBandForm.UploadColor.G);
+            AssertEqual(255, (int)TaskbarBandForm.UploadColor.B);
+        });
+
+        RunTest("NativeMethods_DwmStructSizes_Valid", () =>
+        {
+            AssertEqual(16, Marshal.SizeOf<NativeMethods.AccentPolicy>());
+            AssertEqual(IntPtr.Size == 8 ? 24 : 12, Marshal.SizeOf<NativeMethods.WindowCompositionAttributeData>());
         });
 
         Console.WriteLine("--------------------------------------------------");
