@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace iNetOMeter;
 
@@ -22,7 +24,8 @@ public record SpeedTestProgress(
     double? LatencyMs = null,
     double? JitterMs = null,
     double? DownloadMbps = null,
-    double? UploadMbps = null
+    double? UploadMbps = null,
+    double ElapsedSeconds = 0.0
 );
 
 public record SpeedTestResult(
@@ -35,14 +38,17 @@ public record SpeedTestResult(
     string Asn,
     DateTime Timestamp,
     bool Success,
-    string? ErrorMessage = null
+    string? ErrorMessage = null,
+    double DurationSeconds = 0.0,
+    long TotalBytesDownloaded = 0,
+    long TotalBytesUploaded = 0
 )
 {
-    public static SpeedTestResult Failure(string errorMessage) =>
-        new(0, 0, 0, 0, "Unknown", "N/A", "N/A", DateTime.UtcNow, false, errorMessage);
+    public static SpeedTestResult Failure(string errorMessage, double durationSeconds = 0.0) =>
+        new(0, 0, 0, 0, "Unknown", "N/A", "N/A", DateTime.Now, false, errorMessage, durationSeconds);
 
-    public static SpeedTestResult Cancelled() =>
-        new(0, 0, 0, 0, "Cancelled", "N/A", "N/A", DateTime.UtcNow, false, "Test was cancelled by user.");
+    public static SpeedTestResult Cancelled(double durationSeconds = 0.0) =>
+        new(0, 0, 0, 0, "Cancelled", "N/A", "N/A", DateTime.Now, false, "Test was cancelled by user.", durationSeconds);
 }
 
 public static class SpeedConverter
@@ -59,5 +65,42 @@ public static class SpeedConverter
         if (mbps < 10.0) return $"{mbps:0.00}";
         if (mbps < 100.0) return $"{mbps:0.0}";
         return $"{mbps:0}";
+    }
+
+    /// <summary>
+    /// Calculates network jitter in milliseconds according to RFC 3550:
+    /// Mean absolute difference between consecutive latency samples.
+    /// Returns 0.0 if fewer than 2 samples are available.
+    /// </summary>
+    public static double CalculateJitter(IReadOnlyList<double> samples)
+    {
+        if (samples == null || samples.Count < 2) return 0.0;
+
+        double sumDifferences = 0.0;
+        int diffCount = 0;
+
+        for (int i = 1; i < samples.Count; i++)
+        {
+            sumDifferences += Math.Abs(samples[i] - samples[i - 1]);
+            diffCount++;
+        }
+
+        return diffCount > 0 ? Math.Round(sumDifferences / diffCount, 1) : 0.0;
+    }
+
+    /// <summary>
+    /// Calculates median latency from a collection of samples.
+    /// </summary>
+    public static double CalculateMedian(IReadOnlyList<double> samples)
+    {
+        if (samples == null || samples.Count == 0) return 0.0;
+
+        var sorted = samples.OrderBy(x => x).ToList();
+        int mid = sorted.Count / 2;
+        if (sorted.Count % 2 != 0)
+        {
+            return Math.Round(sorted[mid], 1);
+        }
+        return Math.Round((sorted[mid - 1] + sorted[mid]) / 2.0, 1);
     }
 }

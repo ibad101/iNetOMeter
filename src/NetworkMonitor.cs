@@ -6,8 +6,11 @@ namespace iNetOMeter;
 
 public record NetworkSpeed(double DownloadBytesPerSec, double UploadBytesPerSec)
 {
-    public string DownloadFormatted => NetworkMonitor.FormatSpeed(DownloadBytesPerSec);
-    public string UploadFormatted => NetworkMonitor.FormatSpeed(UploadBytesPerSec);
+    public string DownloadFormatted => NetworkMonitor.FormatSpeed(DownloadBytesPerSec, SettingsService.Instance.Current.SpeedFormat);
+    public string UploadFormatted => NetworkMonitor.FormatSpeed(UploadBytesPerSec, SettingsService.Instance.Current.SpeedFormat);
+
+    public string GetFormattedDownload(SpeedFormatOption format) => NetworkMonitor.FormatSpeed(DownloadBytesPerSec, format);
+    public string GetFormattedUpload(SpeedFormatOption format) => NetworkMonitor.FormatSpeed(UploadBytesPerSec, format);
 }
 
 public class NetworkMonitor
@@ -75,33 +78,83 @@ public class NetworkMonitor
         return new NetworkSpeed(downSpeed, upSpeed);
     }
 
-    public static string FormatSpeed(double bytesPerSec)
+    public static string FormatSpeed(double bytesPerSec, SpeedFormatOption format = SpeedFormatOption.AutoBytes)
     {
         if (bytesPerSec <= 0)
         {
-            return "0.0 KB/s";
+            return format switch
+            {
+                SpeedFormatOption.AutoBits => "0.0 Kbps",
+                SpeedFormatOption.AlwaysMbps => "0.00 Mbps",
+                SpeedFormatOption.AlwaysMBps => "0.00 MB/s",
+                _ => "0.0 KB/s"
+            };
         }
 
-        const double KB = 1024.0;
-        const double MB = KB * 1024.0;
-        const double GB = MB * 1024.0;
+        switch (format)
+        {
+            case SpeedFormatOption.AutoBits:
+            {
+                double bitsPerSec = bytesPerSec * 8.0;
+                if (bitsPerSec < 1000)
+                {
+                    return $"{bitsPerSec:0} bps";
+                }
+                if (bitsPerSec < 1_000_000)
+                {
+                    double kbps = bitsPerSec / 1000.0;
+                    return kbps < 100 ? $"{kbps:0.0} Kbps" : $"{kbps:0} Kbps";
+                }
+                if (bitsPerSec < 1_000_000_000)
+                {
+                    double mbps = bitsPerSec / 1_000_000.0;
+                    return mbps < 100 ? $"{mbps:0.0} Mbps" : $"{mbps:0} Mbps";
+                }
+                double gbps = bitsPerSec / 1_000_000_000.0;
+                return $"{gbps:0.00} Gbps";
+            }
 
-        if (bytesPerSec < KB)
-        {
-            return $"{bytesPerSec:0} B/s";
-        }
-        if (bytesPerSec < MB)
-        {
-            double kb = bytesPerSec / KB;
-            return kb < 100 ? $"{kb:0.0} KB/s" : $"{kb:0} KB/s";
-        }
-        if (bytesPerSec < GB)
-        {
-            double mb = bytesPerSec / MB;
-            return mb < 100 ? $"{mb:0.0} MB/s" : $"{mb:0} MB/s";
-        }
+            case SpeedFormatOption.AlwaysMbps:
+            {
+                double mbps = (bytesPerSec * 8.0) / 1_000_000.0;
+                if (mbps < 10.0) return $"{mbps:0.00} Mbps";
+                if (mbps < 100.0) return $"{mbps:0.0} Mbps";
+                return $"{mbps:0} Mbps";
+            }
 
-        double gb = bytesPerSec / GB;
-        return $"{gb:0.00} GB/s";
+            case SpeedFormatOption.AlwaysMBps:
+            {
+                double mb = bytesPerSec / (1024.0 * 1024.0);
+                if (mb < 10.0) return $"{mb:0.00} MB/s";
+                if (mb < 100.0) return $"{mb:0.0} MB/s";
+                return $"{mb:0} MB/s";
+            }
+
+            case SpeedFormatOption.AutoBytes:
+            default:
+            {
+                const double KB = 1024.0;
+                const double MB = KB * 1024.0;
+                const double GB = MB * 1024.0;
+
+                if (bytesPerSec < KB)
+                {
+                    return $"{bytesPerSec:0} B/s";
+                }
+                if (bytesPerSec < MB)
+                {
+                    double kb = bytesPerSec / KB;
+                    return kb < 100 ? $"{kb:0.0} KB/s" : $"{kb:0} KB/s";
+                }
+                if (bytesPerSec < GB)
+                {
+                    double mb = bytesPerSec / MB;
+                    return mb < 100 ? $"{mb:0.0} MB/s" : $"{mb:0} MB/s";
+                }
+
+                double gb = bytesPerSec / GB;
+                return $"{gb:0.00} GB/s";
+            }
+        }
     }
 }

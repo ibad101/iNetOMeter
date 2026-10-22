@@ -59,8 +59,8 @@ public class TaskbarBandForm : Form
         BackColor = BackgroundCharcoal;
         Size = new Size(94, 40);
 
-        // Subtle 96% opacity for reliable hardware-composited translucent blending
-        Opacity = 0.96;
+        // Apply saved opacity preference (default: 0.96)
+        Opacity = SettingsService.Instance.Current.WidgetOpacity;
 
         _labelFont = new Font("Segoe UI", 5.0f, FontStyle.Bold, GraphicsUnit.Point);
         _valueFont = new Font("Segoe UI", 7.2f, FontStyle.Bold, GraphicsUnit.Point);
@@ -88,18 +88,24 @@ public class TaskbarBandForm : Form
         _divPen = new Pen(DividerColor, 1f);
         _borderPen = new Pen(BorderColor, 1f);
 
-        // Context menu
+        // Stage 4 Context menu: Run Speed Test, View Last 5 Tests, Settings, Exit
         _contextMenu = new ContextMenuStrip();
         var titleItem = new ToolStripMenuItem("iNetOMeter") { Enabled = false };
-        var speedTestItem = new ToolStripMenuItem("Internet Speed Test...", null, (_, _) => SpeedTestForm.ShowOrActivate())
+
+        var speedTestItem = new ToolStripMenuItem("Run Speed Test", null, (_, _) => SpeedTestForm.ShowOrActivate())
         {
             Font = new Font("Segoe UI", 9f, FontStyle.Bold)
         };
-        var exitItem = new ToolStripMenuItem("Exit", null, (_, _) => Application.Exit());
+
+        var historyItem = new ToolStripMenuItem("View Last 5 Tests", null, (_, _) => HistoryForm.ShowOrActivate());
+        var settingsItem = new ToolStripMenuItem("Settings", null, (_, _) => SettingsForm.ShowOrActivate());
+        var exitItem = new ToolStripMenuItem("Exit iNetOMeter", null, (_, _) => Application.Exit());
 
         _contextMenu.Items.Add(titleItem);
         _contextMenu.Items.Add(new ToolStripSeparator());
         _contextMenu.Items.Add(speedTestItem);
+        _contextMenu.Items.Add(historyItem);
+        _contextMenu.Items.Add(settingsItem);
         _contextMenu.Items.Add(new ToolStripSeparator());
         _contextMenu.Items.Add(exitItem);
         ContextMenuStrip = _contextMenu;
@@ -107,10 +113,10 @@ public class TaskbarBandForm : Form
         // Double click launches the Internet Speed Test
         DoubleClick += (_, _) => SpeedTestForm.ShowOrActivate();
 
-        // Bandwidth calculation timer (1 second interval)
+        // Bandwidth calculation timer
         _updateTimer = new System.Windows.Forms.Timer
         {
-            Interval = 1000
+            Interval = SettingsService.Instance.Current.UpdateIntervalMs
         };
         _updateTimer.Tick += OnUpdateTimerTick;
 
@@ -123,6 +129,22 @@ public class TaskbarBandForm : Form
 
         // Pin delegate to prevent GC collection while WinEventHook is active
         _winEventDelegate = OnWinEvent;
+
+        // Listen for user preference updates
+        SettingsService.Instance.SettingsChanged += OnSettingsChanged;
+    }
+
+    private void OnSettingsChanged(UserSettings settings)
+    {
+        if (IsHandleCreated && !IsDisposed)
+        {
+            BeginInvoke(new Action(() =>
+            {
+                Opacity = settings.WidgetOpacity;
+                _updateTimer.Interval = settings.UpdateIntervalMs;
+                Invalidate();
+            }));
+        }
     }
 
     protected override CreateParams CreateParams
@@ -306,6 +328,8 @@ public class TaskbarBandForm : Form
     {
         if (disposing)
         {
+            SettingsService.Instance.SettingsChanged -= OnSettingsChanged;
+
             if (_hWinEventHook != IntPtr.Zero)
             {
                 NativeMethods.UnhookWinEvent(_hWinEventHook);

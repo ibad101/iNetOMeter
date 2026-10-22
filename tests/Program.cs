@@ -1,8 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Forms;
 using iNetOMeter;
 
 namespace iNetOMeter.Tests;
@@ -12,13 +15,14 @@ internal class Program
     private static int _passedCount = 0;
     private static int _failedCount = 0;
 
+    [STAThread]
     static int Main(string[] args)
     {
         Console.WriteLine("==================================================");
-        Console.WriteLine("  iNetOMeter Automated Test Suite (Stage 3)");
+        Console.WriteLine("  iNetOMeter Automated Test Suite (Stages 3 & 4)");
         Console.WriteLine("==================================================");
 
-        // Network Monitor FormatSpeed Tests
+        // --- NETWORK MONITOR & FORMATTING TESTS ---
         RunTest("FormatSpeed_ZeroBytes_ReturnsDefault", () =>
         {
             AssertEqual("0.0 KB/s", NetworkMonitor.FormatSpeed(0));
@@ -50,14 +54,30 @@ internal class Program
             AssertEqual("1.50 GB/s", NetworkMonitor.FormatSpeed(1.5 * 1024 * 1024 * 1024));
         });
 
+        RunTest("FormatSpeed_SpeedFormatOptions_FormatsBitsAndMbCorrectly", () =>
+        {
+            // AutoBits
+            AssertEqual("0.0 Kbps", NetworkMonitor.FormatSpeed(0, SpeedFormatOption.AutoBits));
+            AssertEqual("8.0 Kbps", NetworkMonitor.FormatSpeed(1000, SpeedFormatOption.AutoBits));
+            AssertEqual("80.0 Mbps", NetworkMonitor.FormatSpeed(10_000_000, SpeedFormatOption.AutoBits));
+
+            // AlwaysMbps
+            AssertEqual("0.00 Mbps", NetworkMonitor.FormatSpeed(0, SpeedFormatOption.AlwaysMbps));
+            AssertEqual("8.00 Mbps", NetworkMonitor.FormatSpeed(1_000_000, SpeedFormatOption.AlwaysMbps));
+
+            // AlwaysMBps
+            AssertEqual("0.00 MB/s", NetworkMonitor.FormatSpeed(0, SpeedFormatOption.AlwaysMBps));
+            AssertEqual("1.00 MB/s", NetworkMonitor.FormatSpeed(1024 * 1024, SpeedFormatOption.AlwaysMBps));
+        });
+
         RunTest("NetworkSpeedRecord_FormatsCorrectly", () =>
         {
             var speed = new NetworkSpeed(1024 * 1024, 512 * 1024);
-            AssertEqual("1.0 MB/s", speed.DownloadFormatted);
-            AssertEqual("512 KB/s", speed.UploadFormatted);
+            AssertEqual("1.0 MB/s", speed.GetFormattedDownload(SpeedFormatOption.AutoBytes));
+            AssertEqual("512 KB/s", speed.GetFormattedUpload(SpeedFormatOption.AutoBytes));
         });
 
-        // Taskbar Layout Calculation Tests
+        // --- TASKBAR LAYOUT & ANCHORING TESTS ---
         RunTest("CalculateAnchorBounds_BottomTaskbar_AnchorsLeftOfNotifyWnd", () =>
         {
             var trayRect = new Rectangle(0, 1040, 1920, 40);
@@ -118,7 +138,7 @@ internal class Program
             AssertEqual(desiredHeight, bounds.Height);
         });
 
-        // Visual Tokens & Reference Design Tests
+        // --- VISUAL TOKENS & REFERENCE PALETTE TESTS ---
         RunTest("Visuals_DownloadAccent_Matches_FF525C", () =>
         {
             AssertEqual(255, (int)TaskbarBandForm.DownloadAccent.R);
@@ -147,14 +167,12 @@ internal class Program
             AssertEqual(IntPtr.Size == 8 ? 24 : 12, Marshal.SizeOf<NativeMethods.WindowCompositionAttributeData>());
         });
 
-        // --- STAGE 3 TESTS: SPEED CONVERTER & MODELS ---
+        // --- SPEED CONVERTER, JITTER & MEDIAN TESTS ---
         RunTest("SpeedConverter_BytesPerSecondToMbps_CalculatesCorrectly", () =>
         {
             AssertEqual(0.0, SpeedConverter.BytesPerSecondToMbps(0));
             AssertEqual(0.0, SpeedConverter.BytesPerSecondToMbps(-100));
-            // 125,000 bytes/sec * 8 = 1,000,000 bits/sec = 1.0 Mbps
             AssertEqual(1.0, SpeedConverter.BytesPerSecondToMbps(125_000));
-            // 12,500,000 bytes/sec * 8 = 100.0 Mbps
             AssertEqual(100.0, SpeedConverter.BytesPerSecondToMbps(12_500_000));
         });
 
@@ -166,35 +184,60 @@ internal class Program
             AssertEqual("250", SpeedConverter.FormatMbps(250.4));
         });
 
-        RunTest("SpeedTestResult_Factories_CreateExpectedRecords", () =>
+        RunTest("SpeedConverter_CalculateJitter_KnownSamples_CalculatesAccurately", () =>
         {
-            var fail = SpeedTestResult.Failure("Network unreachable");
-            AssertEqual(false, fail.Success);
-            AssertEqual("Network unreachable", fail.ErrorMessage);
+            // Empty and single sample
+            AssertEqual(0.0, SpeedConverter.CalculateJitter(new List<double>()));
+            AssertEqual(0.0, SpeedConverter.CalculateJitter(new List<double> { 50.0 }));
 
-            var cancel = SpeedTestResult.Cancelled();
-            AssertEqual(false, cancel.Success);
-            AssertEqual("Cancelled", cancel.ServerLocation);
+            // Known RFC 3550 samples: [50, 52, 49, 53]
+            // Differences: |52-50|=2, |49-52|=3, |53-49|=4. Mean = (2+3+4)/3 = 3.0 ms
+            var samples = new List<double> { 50.0, 52.0, 49.0, 53.0 };
+            AssertEqual(3.0, SpeedConverter.CalculateJitter(samples));
+
+            // Stable connection (jitter = 0)
+            var zeroJitter = new List<double> { 35.0, 35.0, 35.0 };
+            AssertEqual(0.0, SpeedConverter.CalculateJitter(zeroJitter));
         });
 
-        // --- STAGE 3 TESTS: TASKBAR AUTO-HIDE & EDGE DETECTION ---
+        RunTest("SpeedConverter_CalculateMedian_OddAndEvenCounts_CalculatesAccurately", () =>
+        {
+            AssertEqual(0.0, SpeedConverter.CalculateMedian(new List<double>()));
+
+            // Odd count: [45, 55, 50] -> sorted: [45, 50, 55] -> median: 50.0
+            AssertEqual(50.0, SpeedConverter.CalculateMedian(new List<double> { 45.0, 55.0, 50.0 }));
+
+            // Even count: [40, 50, 60, 70] -> median: (50 + 60) / 2 = 55.0
+            AssertEqual(55.0, SpeedConverter.CalculateMedian(new List<double> { 40.0, 50.0, 60.0, 70.0 }));
+        });
+
+        RunTest("SpeedTestResult_Factories_CreateExpectedRecords", () =>
+        {
+            var fail = SpeedTestResult.Failure("Network unreachable", 12.3);
+            AssertEqual(false, fail.Success);
+            AssertEqual("Network unreachable", fail.ErrorMessage);
+            AssertEqual(12.3, fail.DurationSeconds);
+
+            var cancel = SpeedTestResult.Cancelled(5.5);
+            AssertEqual(false, cancel.Success);
+            AssertEqual("Cancelled", cancel.ServerLocation);
+            AssertEqual(5.5, cancel.DurationSeconds);
+        });
+
+        // --- TASKBAR AUTO-HIDE & EDGE DETECTION TESTS ---
         var monitor = new Rectangle(0, 0, 1920, 1080);
 
         RunTest("TaskbarTracker_GetTaskbarEdge_IdentifiesAllFourEdges", () =>
         {
-            // Bottom horizontal
             var bottomTray = new Rectangle(0, 1040, 1920, 40);
             AssertEqual(TaskbarEdge.Bottom, TaskbarTracker.GetTaskbarEdge(bottomTray, monitor));
 
-            // Top horizontal
             var topTray = new Rectangle(0, 0, 1920, 40);
             AssertEqual(TaskbarEdge.Top, TaskbarTracker.GetTaskbarEdge(topTray, monitor));
 
-            // Left vertical
             var leftTray = new Rectangle(0, 0, 60, 1080);
             AssertEqual(TaskbarEdge.Left, TaskbarTracker.GetTaskbarEdge(leftTray, monitor));
 
-            // Right vertical
             var rightTray = new Rectangle(1860, 0, 60, 1080);
             AssertEqual(TaskbarEdge.Right, TaskbarTracker.GetTaskbarEdge(rightTray, monitor));
         });
@@ -204,7 +247,6 @@ internal class Program
             var visibleTray = new Rectangle(0, 1040, 1920, 40);
             AssertEqual(true, TaskbarTracker.IsTaskbarVisible(visibleTray, monitor, TaskbarEdge.Bottom));
 
-            // Auto-hidden: only 2px on screen
             var hiddenTray = new Rectangle(0, 1078, 1920, 40);
             AssertEqual(false, TaskbarTracker.IsTaskbarVisible(hiddenTray, monitor, TaskbarEdge.Bottom));
         });
@@ -240,7 +282,7 @@ internal class Program
         {
             using var svc = new SpeedTestService();
             using var cts = new CancellationTokenSource();
-            cts.Cancel(); // Cancel immediately
+            cts.Cancel();
 
             var task = svc.RunFullTestAsync(null, cts.Token);
             var result = task.GetAwaiter().GetResult();
@@ -249,12 +291,211 @@ internal class Program
             AssertEqual("Cancelled", result.ServerLocation);
         });
 
+        // --- STAGE 4 TESTS: PERSISTENT HISTORY SERVICE ---
+        string tempHistoryPath = Path.Combine(Path.GetTempPath(), $"iNetOMeter_Test_History_{Guid.NewGuid():N}.json");
+
+        RunTest("HistoryService_KeepsExactlyFiveNewestRecords_AndOrdersNewestFirst", () =>
+        {
+            try
+            {
+                var historySvc = new HistoryService(tempHistoryPath);
+                AssertEqual(0, historySvc.GetHistory().Count);
+
+                // Add 7 successful results with spaced timestamps
+                DateTime baseTime = new DateTime(2026, 10, 22, 12, 0, 0, DateTimeKind.Local);
+                for (int i = 1; i <= 7; i++)
+                {
+                    var res = new SpeedTestResult(
+                        LatencyMs: 20 + i,
+                        JitterMs: 1 + (i * 0.5),
+                        DownloadMbps: 50 + i * 10,
+                        UploadMbps: 20 + i * 5,
+                        ServerLocation: $"Colo-{i}",
+                        ServerColo: $"C{i}",
+                        Asn: "AS13335",
+                        Timestamp: baseTime.AddMinutes(i),
+                        Success: true,
+                        ErrorMessage: null,
+                        DurationSeconds: 30.0 + i
+                    );
+                    historySvc.AddResult(res);
+                }
+
+                var records = historySvc.GetHistory();
+                AssertEqual(5, records.Count);
+
+                // Newest must be the last one added (Colo-7, timestamp +7 min)
+                AssertEqual("Colo-7", records[0].ServerName);
+                AssertEqual(120.0, records[0].DownloadMbps);
+                AssertEqual("Colo-3", records[4].ServerName); // 5th newest
+
+                // Verify file exists on disk and can be reloaded in a fresh instance
+                var freshHistorySvc = new HistoryService(tempHistoryPath);
+                var reloaded = freshHistorySvc.GetHistory();
+                AssertEqual(5, reloaded.Count);
+                AssertEqual("Colo-7", reloaded[0].ServerName);
+            }
+            finally
+            {
+                if (File.Exists(tempHistoryPath)) File.Delete(tempHistoryPath);
+            }
+        });
+
+        RunTest("HistoryService_RejectsFailedAndCancelledResults", () =>
+        {
+            try
+            {
+                var historySvc = new HistoryService(tempHistoryPath);
+
+                historySvc.AddResult(SpeedTestResult.Failure("Network down"));
+                historySvc.AddResult(SpeedTestResult.Cancelled());
+                AssertEqual(0, historySvc.GetHistory().Count);
+
+                // Valid result is accepted
+                historySvc.AddResult(new SpeedTestResult(25, 2, 70, 40, "Edge", "E1", "AS1", DateTime.Now, true));
+                AssertEqual(1, historySvc.GetHistory().Count);
+            }
+            finally
+            {
+                if (File.Exists(tempHistoryPath)) File.Delete(tempHistoryPath);
+            }
+        });
+
+        RunTest("HistoryService_CorruptFile_RecoversGracefullyWithoutCrashing", () =>
+        {
+            try
+            {
+                File.WriteAllText(tempHistoryPath, "{ this is invalid corrupted json content }}}");
+                var historySvc = new HistoryService(tempHistoryPath);
+                var list = historySvc.GetHistory();
+                AssertEqual(0, list.Count);
+            }
+            finally
+            {
+                if (File.Exists(tempHistoryPath)) File.Delete(tempHistoryPath);
+            }
+        });
+
+        RunTest("HistoryService_ClearHistory_DeletesFileAndEmptiesList", () =>
+        {
+            try
+            {
+                var historySvc = new HistoryService(tempHistoryPath);
+                historySvc.AddResult(new SpeedTestResult(25, 2, 70, 40, "Edge", "E1", "AS1", DateTime.Now, true));
+                AssertEqual(1, historySvc.GetHistory().Count);
+
+                historySvc.ClearHistory();
+                AssertEqual(0, historySvc.GetHistory().Count);
+                AssertEqual(false, File.Exists(tempHistoryPath));
+            }
+            finally
+            {
+                if (File.Exists(tempHistoryPath)) File.Delete(tempHistoryPath);
+            }
+        });
+
+        // --- STAGE 4 TESTS: SETTINGS SERVICE ---
+        string tempSettingsPath = Path.Combine(Path.GetTempPath(), $"iNetOMeter_Test_Settings_{Guid.NewGuid():N}.json");
+
+        RunTest("SettingsService_DefaultsAndPersistence_SavesAndLoadsCorrectly", () =>
+        {
+            try
+            {
+                var svc = new SettingsService(tempSettingsPath);
+                var defaults = svc.Current;
+
+                AssertEqual(false, defaults.StartWithWindows);
+                AssertEqual(SpeedFormatOption.AutoBytes, defaults.SpeedFormat);
+                AssertEqual(0.96, defaults.WidgetOpacity);
+                AssertEqual(1000, defaults.UpdateIntervalMs);
+
+                // Save custom settings
+                var custom = new UserSettings
+                {
+                    StartWithWindows = false,
+                    SpeedFormat = SpeedFormatOption.AlwaysMbps,
+                    WidgetOpacity = 0.88,
+                    UpdateIntervalMs = 500
+                };
+                svc.Save(custom);
+
+                // Reload in new instance
+                var reloadedSvc = new SettingsService(tempSettingsPath);
+                var loaded = reloadedSvc.Current;
+
+                AssertEqual(SpeedFormatOption.AlwaysMbps, loaded.SpeedFormat);
+                AssertEqual(0.88, loaded.WidgetOpacity);
+                AssertEqual(500, loaded.UpdateIntervalMs);
+            }
+            finally
+            {
+                if (File.Exists(tempSettingsPath)) File.Delete(tempSettingsPath);
+            }
+        });
+
+        RunTest("SettingsService_CorruptFile_RecoversWithDefaults", () =>
+        {
+            try
+            {
+                File.WriteAllText(tempSettingsPath, "INVALID SETTINGS JSON <<>>");
+                var svc = new SettingsService(tempSettingsPath);
+                var current = svc.Current;
+
+                AssertEqual(0.96, current.WidgetOpacity);
+                AssertEqual(1000, current.UpdateIntervalMs);
+                AssertEqual(SpeedFormatOption.AutoBytes, current.SpeedFormat);
+            }
+            finally
+            {
+                if (File.Exists(tempSettingsPath)) File.Delete(tempSettingsPath);
+            }
+        });
+
+        RunTest("SettingsService_ValidationAndClamping_ClampsOutOfBoundsValues", () =>
+        {
+            try
+            {
+                var svc = new SettingsService(tempSettingsPath);
+                var extreme = new UserSettings
+                {
+                    WidgetOpacity = 0.10, // Too low, should clamp to 0.50
+                    UpdateIntervalMs = 100 // Too fast, should clamp to 500
+                };
+                svc.Save(extreme);
+
+                var loaded = svc.Current;
+                AssertEqual(0.50, loaded.WidgetOpacity);
+                AssertEqual(500, loaded.UpdateIntervalMs);
+            }
+            finally
+            {
+                if (File.Exists(tempSettingsPath)) File.Delete(tempSettingsPath);
+            }
+        });
+
+        // --- STAGE 4 TESTS: FORM LIFECYCLE & REUSE ---
         RunTest("SpeedTestForm_InstantiatesAndDisposesCleanly", () =>
         {
             using var form = new SpeedTestForm();
             AssertEqual("Internet Speed Test - iNetOMeter", form.Text);
             AssertEqual(680, form.Size.Width);
-            AssertEqual(540, form.Size.Height);
+            AssertEqual(560, form.Size.Height);
+        });
+
+        RunTest("HistoryForm_InstantiatesAndDisposesCleanly", () =>
+        {
+            using var form = new HistoryForm();
+            AssertEqual("Speed Test History - iNetOMeter", form.Text);
+            AssertEqual(660, form.Size.Width);
+            AssertEqual(520, form.Size.Height);
+        });
+
+        RunTest("SettingsForm_InstantiatesAndDisposesCleanly", () =>
+        {
+            using var form = new SettingsForm();
+            AssertEqual("Settings - iNetOMeter", form.Text);
+            AssertEqual(500, form.Size.Width);
+            AssertEqual(460, form.Size.Height);
         });
 
         Console.WriteLine("--------------------------------------------------");

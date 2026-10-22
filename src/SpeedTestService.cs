@@ -6,7 +6,6 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -33,7 +32,7 @@ public class SpeedTestService : IDisposable
                 AutomaticDecompression = DecompressionMethods.None,
                 ConnectCallback = async (context, ct) =>
                 {
-                    // Prioritize IPv4 to avoid broken IPv6 route hangs
+                    // Prioritize IPv4 to avoid broken IPv6 route hangs on Windows
                     IPAddress[] addresses;
                     try
                     {
@@ -67,7 +66,7 @@ public class SpeedTestService : IDisposable
 
             _httpClient = new HttpClient(handler)
             {
-                Timeout = TimeSpan.FromSeconds(30)
+                Timeout = TimeSpan.FromSeconds(45)
             };
             _httpClient.DefaultRequestHeaders.Add("User-Agent", "iNetOMeter/1.0");
         }
@@ -75,14 +74,15 @@ public class SpeedTestService : IDisposable
 
     public async Task<SpeedTestResult> RunFullTestAsync(IProgress<SpeedTestProgress>? progress, CancellationToken ct)
     {
+        var totalSw = Stopwatch.StartNew();
         string serverLocation = "Cloudflare Edge";
         string serverColo = "Anycast";
         string serverAsn = "Global";
 
         try
         {
-            // Phase 1: Connect & Query Server Meta
-            progress?.Report(new SpeedTestProgress(SpeedTestPhase.Connecting, 0, 5, "Connecting to Cloudflare Anycast edge..."));
+            // Phase 1: Connect & Query Server Meta (~0.5 - 1s)
+            progress?.Report(new SpeedTestProgress(SpeedTestPhase.Connecting, 0, 5, "Connecting to Cloudflare Anycast edge...", ElapsedSeconds: totalSw.Elapsed.TotalSeconds));
 
             try
             {
@@ -103,32 +103,36 @@ public class SpeedTestService : IDisposable
 
             ct.ThrowIfCancellationRequested();
 
-            // Phase 2: Latency & Jitter
-            progress?.Report(new SpeedTestProgress(SpeedTestPhase.Latency, 0, 15, "Measuring HTTP latency & jitter...", null, null, null, null));
-            var (latencyMs, jitterMs) = await MeasureLatencyAsync(progress, ct).ConfigureAwait(false);
+            // Phase 2: Latency & Jitter (Target: ~2.5 - 3.5 seconds)
+            progress?.Report(new SpeedTestProgress(SpeedTestPhase.Latency, 0, 10, "Measuring HTTP latency & jitter...", ElapsedSeconds: totalSw.Elapsed.TotalSeconds));
+            var (latencyMs, jitterMs) = await MeasureLatencyAsync(progress, totalSw, ct).ConfigureAwait(false);
 
             ct.ThrowIfCancellationRequested();
 
-            // Phase 3: Download Throughput
-            progress?.Report(new SpeedTestProgress(SpeedTestPhase.Download, 0, 35, "Testing download throughput...", latencyMs, jitterMs, 0, null));
-            double downloadMbps = await MeasureDownloadAsync(progress, latencyMs, jitterMs, ct).ConfigureAwait(false);
+            // Phase 3: Download Throughput (Target: ~15 seconds, safe cap 80 MB)
+            progress?.Report(new SpeedTestProgress(SpeedTestPhase.Download, 0, 25, "Testing download throughput...", latencyMs, jitterMs, 0, null, ElapsedSeconds: totalSw.Elapsed.TotalSeconds));
+            var (downloadMbps, bytesDownloaded) = await MeasureDownloadAsync(progress, latencyMs, jitterMs, totalSw, ct).ConfigureAwait(false);
 
             ct.ThrowIfCancellationRequested();
 
-            // Phase 4: Upload Throughput
-            progress?.Report(new SpeedTestProgress(SpeedTestPhase.Upload, 0, 70, "Testing upload throughput...", latencyMs, jitterMs, downloadMbps, 0));
-            double uploadMbps = await MeasureUploadAsync(progress, latencyMs, jitterMs, downloadMbps, ct).ConfigureAwait(false);
+            // Phase 4: Upload Throughput (Target: ~15 seconds, safe cap 30 MB)
+            progress?.Report(new SpeedTestProgress(SpeedTestPhase.Upload, 0, 65, "Testing upload throughput...", latencyMs, jitterMs, downloadMbps, 0, ElapsedSeconds: totalSw.Elapsed.TotalSeconds));
+            var (uploadMbps, bytesUploaded) = await MeasureUploadAsync(progress, latencyMs, jitterMs, downloadMbps, totalSw, ct).ConfigureAwait(false);
+
+            totalSw.Stop();
+            double durationSec = Math.Round(totalSw.Elapsed.TotalSeconds, 1);
 
             // Phase 5: Completed
             progress?.Report(new SpeedTestProgress(
                 SpeedTestPhase.Completed,
                 0,
                 100,
-                "Test complete.",
+                $"Test complete in {durationSec:0.0}s.",
                 latencyMs,
                 jitterMs,
                 downloadMbps,
-                uploadMbps
+                uploadMbps,
+                ElapsedSeconds: durationSec
             ));
 
             return new SpeedTestResult(
@@ -139,17 +143,25 @@ public class SpeedTestService : IDisposable
                 serverLocation,
                 serverColo,
                 serverAsn,
-                DateTime.UtcNow,
-                true
+                DateTime.Now,
+                true,
+                null,
+                durationSec,
+                bytesDownloaded,
+                bytesUploaded
             );
         }
         catch (OperationCanceledException)
         {
-            progress?.Report(new SpeedTestProgress(SpeedTestPhase.Cancelled, 0, 0, "Test was cancelled."));
-            return SpeedTestResult.Cancelled();
+            totalSw.Stop();
+            double durationSec = Math.Round(totalSw.Elapsed.TotalSeconds, 1);
+            progress?.Report(new SpeedTestProgress(SpeedTestPhase.Cancelled, 0, 0, "Test was cancelled.", ElapsedSeconds: durationSec));
+            return SpeedTestResult.Cancelled(durationSec);
         }
         catch (Exception ex)
         {
+            totalSw.Stop();
+            double durationSec = Math.Round(totalSw.Elapsed.TotalSeconds, 1);
             string errorMessage = ex switch
             {
                 HttpRequestException httpEx => $"Network error: {httpEx.Message}",
@@ -157,8 +169,8 @@ public class SpeedTestService : IDisposable
                 _ => $"Test failed: {ex.Message}"
             };
 
-            progress?.Report(new SpeedTestProgress(SpeedTestPhase.Failed, 0, 0, errorMessage));
-            return SpeedTestResult.Failure(errorMessage);
+            progress?.Report(new SpeedTestProgress(SpeedTestPhase.Failed, 0, 0, errorMessage, ElapsedSeconds: durationSec));
+            return SpeedTestResult.Failure(errorMessage, durationSec);
         }
     }
 
@@ -197,9 +209,10 @@ public class SpeedTestService : IDisposable
         return new CloudflareMeta(city, country, colo, asn);
     }
 
-    public async Task<(double LatencyMs, double JitterMs)> MeasureLatencyAsync(IProgress<SpeedTestProgress>? progress, CancellationToken ct)
+    public async Task<(double LatencyMs, double JitterMs)> MeasureLatencyAsync(IProgress<SpeedTestProgress>? progress, Stopwatch totalSw, CancellationToken ct)
     {
-        const int sampleCount = 5;
+        // 12 probes spaced by ~140ms produces a ~2.5 - 3.5s measurement window
+        const int sampleCount = 12;
         var samples = new List<double>(sampleCount);
         var sw = new Stopwatch();
 
@@ -216,44 +229,53 @@ public class SpeedTestService : IDisposable
             double rtt = Math.Max(1.0, sw.Elapsed.TotalMilliseconds);
             samples.Add(rtt);
 
-            double currentAvg = samples.Average();
+            double currentMedian = SpeedConverter.CalculateMedian(samples);
+            double currentJitter = SpeedConverter.CalculateJitter(samples);
+            double percent = 10 + ((i + 1.0) / sampleCount * 15);
+
             progress?.Report(new SpeedTestProgress(
                 SpeedTestPhase.Latency,
                 0,
-                15 + (int)((i + 1.0) / sampleCount * 15),
-                $"Measuring latency ({i + 1}/{sampleCount})...",
-                currentAvg,
+                percent,
+                $"Measuring latency & jitter (probe {i + 1}/{sampleCount})... {currentMedian:0} ms",
+                currentMedian,
+                currentJitter,
                 null,
                 null,
-                null
+                ElapsedSeconds: totalSw.Elapsed.TotalSeconds
             ));
 
-            await Task.Delay(40, ct).ConfigureAwait(false);
+            if (i < sampleCount - 1)
+            {
+                await Task.Delay(130, ct).ConfigureAwait(false);
+            }
         }
 
-        samples.Sort();
-        double medianLatency = samples[samples.Count / 2];
+        double medianLatency = SpeedConverter.CalculateMedian(samples);
+        double jitter = SpeedConverter.CalculateJitter(samples);
 
-        double jitterSum = 0;
-        for (int i = 1; i < samples.Count; i++)
-        {
-            jitterSum += Math.Abs(samples[i] - samples[i - 1]);
-        }
-        double jitter = samples.Count > 1 ? jitterSum / (samples.Count - 1) : 0;
-
-        return (Math.Round(medianLatency, 1), Math.Round(jitter, 1));
+        return (medianLatency, jitter);
     }
 
-    public async Task<double> MeasureDownloadAsync(IProgress<SpeedTestProgress>? progress, double latencyMs, double jitterMs, CancellationToken ct)
+    public async Task<(double Mbps, long Bytes)> MeasureDownloadAsync(
+        IProgress<SpeedTestProgress>? progress,
+        double latencyMs,
+        double jitterMs,
+        Stopwatch totalSw,
+        CancellationToken ct)
     {
+        // Target: ~15 seconds; safe cap: 80 MB total payload across 2 concurrent streams
         const int streamCount = 2;
-        const int chunkSize = 8_000_000; // 8 MB per stream
-        long totalBytes = 0;
-        var sw = Stopwatch.StartNew();
+        const int chunkSize = 10_000_000; // 10 MB per chunk
+        const long maxBytes = 80_000_000;
+        const double targetDurationSec = 14.5;
 
-        var tasks = new List<Task>();
+        long totalBytes = 0;
+        var phaseSw = Stopwatch.StartNew();
         var lastReport = Stopwatch.StartNew();
         var streamLock = new object();
+
+        var tasks = new List<Task>();
 
         for (int s = 0; s < streamCount; s++)
         {
@@ -261,104 +283,136 @@ public class SpeedTestService : IDisposable
             tasks.Add(Task.Run(async () =>
             {
                 byte[] buffer = new byte[32768];
-                string url = $"{BaseUrl}/__down?bytes={chunkSize}&r={Guid.NewGuid()}_{streamId}";
 
-                using var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
-
-                using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-                int read;
-                while ((read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false)) > 0)
+                while (phaseSw.Elapsed.TotalSeconds < targetDurationSec && Interlocked.Read(ref totalBytes) < maxBytes)
                 {
-                    lock (streamLock)
-                    {
-                        totalBytes += read;
-                    }
+                    ct.ThrowIfCancellationRequested();
+                    string url = $"{BaseUrl}/__down?bytes={chunkSize}&r={Guid.NewGuid()}_{streamId}";
 
-                    if (lastReport.ElapsedMilliseconds >= 75)
+                    using var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+                    response.EnsureSuccessStatusCode();
+
+                    using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+                    int read;
+                    while ((read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false)) > 0)
                     {
-                        double elapsed = sw.Elapsed.TotalSeconds;
-                        if (elapsed > 0.05)
+                        lock (streamLock)
                         {
-                            double liveMbps = SpeedConverter.BytesPerSecondToMbps(totalBytes / elapsed);
-                            double percent = Math.Min(65, 30 + (elapsed / 5.0) * 35);
-                            progress?.Report(new SpeedTestProgress(
-                                SpeedTestPhase.Download,
-                                liveMbps,
-                                percent,
-                                $"Testing download... {liveMbps:0.0} Mbps",
-                                latencyMs,
-                                jitterMs,
-                                liveMbps,
-                                null
-                            ));
-                            lastReport.Restart();
+                            totalBytes += read;
                         }
-                    }
 
-                    if (sw.Elapsed.TotalSeconds >= 5.5)
-                    {
-                        break;
+                        if (lastReport.ElapsedMilliseconds >= 75)
+                        {
+                            double elapsed = phaseSw.Elapsed.TotalSeconds;
+                            if (elapsed > 0.1)
+                            {
+                                double liveMbps = SpeedConverter.BytesPerSecondToMbps(totalBytes / elapsed);
+                                double percent = Math.Min(65, 25 + (elapsed / targetDurationSec) * 40);
+                                progress?.Report(new SpeedTestProgress(
+                                    SpeedTestPhase.Download,
+                                    liveMbps,
+                                    percent,
+                                    $"Testing download... {liveMbps:0.0} Mbps ({elapsed:0.0}s / {targetDurationSec:0}s)",
+                                    latencyMs,
+                                    jitterMs,
+                                    liveMbps,
+                                    null,
+                                    ElapsedSeconds: totalSw.Elapsed.TotalSeconds
+                                ));
+                                lastReport.Restart();
+                            }
+                        }
+
+                        if (phaseSw.Elapsed.TotalSeconds >= targetDurationSec || Interlocked.Read(ref totalBytes) >= maxBytes)
+                        {
+                            break;
+                        }
                     }
                 }
             }, ct));
         }
 
         await Task.WhenAll(tasks).ConfigureAwait(false);
-        sw.Stop();
+        phaseSw.Stop();
 
-        double finalSeconds = Math.Max(0.1, sw.Elapsed.TotalSeconds);
+        double finalSeconds = Math.Max(0.1, phaseSw.Elapsed.TotalSeconds);
         double finalMbps = Math.Round(SpeedConverter.BytesPerSecondToMbps(totalBytes / finalSeconds), 2);
-        return finalMbps;
+        return (finalMbps, totalBytes);
     }
 
-    public async Task<double> MeasureUploadAsync(IProgress<SpeedTestProgress>? progress, double latencyMs, double jitterMs, double downloadMbps, CancellationToken ct)
+    public async Task<(double Mbps, long Bytes)> MeasureUploadAsync(
+        IProgress<SpeedTestProgress>? progress,
+        double latencyMs,
+        double jitterMs,
+        double downloadMbps,
+        Stopwatch totalSw,
+        CancellationToken ct)
     {
-        const int payloadSize = 2_500_000; // 2.5 MB payload
+        // Target: ~15 seconds; safe cap: 30 MB total payload
+        const int payloadSize = 2_500_000; // 2.5 MB reusable payload
+        const long maxBytes = 30_000_000;
+        const double targetDurationSec = 14.5;
+
         byte[] payload = new byte[payloadSize];
         new Random(42).NextBytes(payload);
 
-        long bytesUploaded = 0;
-        var sw = Stopwatch.StartNew();
+        long totalBytesUploaded = 0;
+        var phaseSw = Stopwatch.StartNew();
         var lastReport = Stopwatch.StartNew();
 
-        var content = new ProgressableStreamContent(payload, sent =>
+        while (phaseSw.Elapsed.TotalSeconds < targetDurationSec && totalBytesUploaded < maxBytes)
         {
-            bytesUploaded = sent;
-            if (lastReport.ElapsedMilliseconds >= 75)
+            ct.ThrowIfCancellationRequested();
+
+            long chunkSent = 0;
+            var content = new ProgressableStreamContent(payload, sent =>
             {
-                double elapsed = sw.Elapsed.TotalSeconds;
-                if (elapsed > 0.05)
+                long newDelta = sent - chunkSent;
+                chunkSent = sent;
+                Interlocked.Add(ref totalBytesUploaded, newDelta);
+
+                if (lastReport.ElapsedMilliseconds >= 75)
                 {
-                    double liveMbps = SpeedConverter.BytesPerSecondToMbps(bytesUploaded / elapsed);
-                    double percent = Math.Min(95, 65 + (elapsed / 4.0) * 30);
-                    progress?.Report(new SpeedTestProgress(
-                        SpeedTestPhase.Upload,
-                        liveMbps,
-                        percent,
-                        $"Testing upload... {liveMbps:0.0} Mbps",
-                        latencyMs,
-                        jitterMs,
-                        downloadMbps,
-                        liveMbps
-                    ));
-                    lastReport.Restart();
+                    double elapsed = phaseSw.Elapsed.TotalSeconds;
+                    if (elapsed > 0.1)
+                    {
+                        double liveMbps = SpeedConverter.BytesPerSecondToMbps(Interlocked.Read(ref totalBytesUploaded) / elapsed);
+                        double percent = Math.Min(96, 65 + (elapsed / targetDurationSec) * 31);
+                        progress?.Report(new SpeedTestProgress(
+                            SpeedTestPhase.Upload,
+                            liveMbps,
+                            percent,
+                            $"Testing upload... {liveMbps:0.0} Mbps ({elapsed:0.0}s / {targetDurationSec:0}s)",
+                            latencyMs,
+                            jitterMs,
+                            downloadMbps,
+                            liveMbps,
+                            ElapsedSeconds: totalSw.Elapsed.TotalSeconds
+                        ));
+                        lastReport.Restart();
+                    }
                 }
+            });
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/__up")
+            {
+                Content = content
+            };
+
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+
+            if (phaseSw.Elapsed.TotalSeconds >= targetDurationSec || totalBytesUploaded >= maxBytes)
+            {
+                break;
             }
-        });
+        }
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/__up")
-        {
-            Content = content
-        };
+        phaseSw.Stop();
 
-        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        sw.Stop();
-
-        double finalSeconds = Math.Max(0.1, sw.Elapsed.TotalSeconds);
-        double finalMbps = Math.Round(SpeedConverter.BytesPerSecondToMbps(bytesUploaded / finalSeconds), 2);
-        return finalMbps;
+        double finalSeconds = Math.Max(0.1, phaseSw.Elapsed.TotalSeconds);
+        double finalMbps = Math.Round(SpeedConverter.BytesPerSecondToMbps(totalBytesUploaded / finalSeconds), 2);
+        return (finalMbps, totalBytesUploaded);
     }
 
     public void Dispose()

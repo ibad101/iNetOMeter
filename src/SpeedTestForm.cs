@@ -33,7 +33,7 @@ public class SpeedTestForm : Form
     private double _gaugeSpeed = 0.0;
     private double _gaugeTargetSpeed = 0.0;
     private double _percentComplete = 0.0;
-    private string _statusText = "Ready to test. Click 'START TEST'.";
+    private string _statusText = "Ready to test. Click 'START SPEED TEST'.";
     private string _serverInfo = "Server: Cloudflare Edge (Anycast)";
 
     private double? _finalLatencyMs;
@@ -47,6 +47,7 @@ public class SpeedTestForm : Form
     // Controls
     private readonly Button _btnStart;
     private readonly Button _btnReset;
+    private readonly Button _btnHistory;
     private readonly LinkLabel _linkTerms;
 
     public SpeedTestForm()
@@ -54,8 +55,8 @@ public class SpeedTestForm : Form
         _speedTestService = new SpeedTestService();
 
         Text = "Internet Speed Test - iNetOMeter";
-        Size = new Size(680, 540);
-        MinimumSize = new Size(600, 480);
+        Size = new Size(680, 560);
+        MinimumSize = new Size(620, 500);
         StartPosition = FormStartPosition.CenterScreen;
         DoubleBuffered = true;
         BackColor = DarkNavyBg;
@@ -65,13 +66,13 @@ public class SpeedTestForm : Form
         // Buttons
         _btnStart = new Button
         {
-            Text = "START TEST",
+            Text = "START SPEED TEST",
             Font = new Font("Segoe UI", 10.5f, FontStyle.Bold),
             FlatStyle = FlatStyle.Flat,
             BackColor = Color.FromArgb(37, 99, 235), // Royal Blue
             ForeColor = Color.White,
             Cursor = Cursors.Hand,
-            Size = new Size(160, 42)
+            Size = new Size(180, 42)
         };
         _btnStart.FlatAppearance.BorderSize = 0;
         _btnStart.Click += OnStartClicked;
@@ -91,9 +92,23 @@ public class SpeedTestForm : Form
         _btnReset.Click += (_, _) => ResetTestState();
         Controls.Add(_btnReset);
 
+        _btnHistory = new Button
+        {
+            Text = "History",
+            Font = new Font("Segoe UI", 9f, FontStyle.Regular),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = CardBg,
+            ForeColor = TextMuted,
+            Cursor = Cursors.Hand,
+            Size = new Size(70, 42)
+        };
+        _btnHistory.FlatAppearance.BorderColor = CardBorder;
+        _btnHistory.Click += (_, _) => HistoryForm.ShowOrActivate();
+        Controls.Add(_btnHistory);
+
         _linkTerms = new LinkLabel
         {
-            Text = "Cloudflare Speed Test Terms & Privacy",
+            Text = "Cloudflare Anycast • Latency reflects HTTP round-trip • Terms & Privacy",
             LinkColor = LatencyColor,
             ActiveLinkColor = Color.White,
             VisitedLinkColor = LatencyColor,
@@ -164,6 +179,7 @@ public class SpeedTestForm : Form
         _btnStart.Text = "CANCEL";
         _btnStart.BackColor = Color.FromArgb(239, 68, 68); // Red
         _btnReset.Enabled = false;
+        _btnHistory.Enabled = false;
         _cts = new CancellationTokenSource();
 
         ResetTestState(clearServerInfo: false);
@@ -189,9 +205,12 @@ public class SpeedTestForm : Form
             if (result.Success)
             {
                 _serverInfo = $"Server: Cloudflare Edge ({result.ServerLocation})";
-                _statusText = "Test complete. Results displayed above.";
+                _statusText = $"Test complete in {result.DurationSeconds:0.0}s. Results recorded to history.";
                 _currentPhase = SpeedTestPhase.Completed;
                 _gaugeTargetSpeed = 0.0;
+
+                // Stage 4 requirement: Record to persistent history
+                HistoryService.Instance.AddResult(result);
             }
             else
             {
@@ -207,10 +226,11 @@ public class SpeedTestForm : Form
         finally
         {
             _isRunning = false;
-            _btnStart.Text = "START TEST";
+            _btnStart.Text = "START SPEED TEST";
             _btnStart.BackColor = Color.FromArgb(37, 99, 235);
             _btnStart.Enabled = true;
             _btnReset.Enabled = true;
+            _btnHistory.Enabled = true;
             _cts?.Dispose();
             _cts = null;
             Invalidate();
@@ -228,7 +248,7 @@ public class SpeedTestForm : Form
         _finalDownloadMbps = null;
         _finalUploadMbps = null;
         if (clearServerInfo) _serverInfo = "Server: Cloudflare Edge (Anycast)";
-        _statusText = "Ready to test. Click 'START TEST'.";
+        _statusText = "Ready to test. Click 'START SPEED TEST'.";
         Invalidate();
     }
 
@@ -243,9 +263,13 @@ public class SpeedTestForm : Form
         int h = ClientSize.Height;
 
         // Position bottom controls
-        int btnY = h - 65;
-        _btnStart.Location = new Point((w - (_btnStart.Width + _btnReset.Width + 10)) / 2, btnY);
+        int btnY = h - 68;
+        int totalBtnWidth = _btnStart.Width + _btnReset.Width + _btnHistory.Width + 20;
+        int btnStartX = (w - totalBtnWidth) / 2;
+
+        _btnStart.Location = new Point(btnStartX, btnY);
         _btnReset.Location = new Point(_btnStart.Right + 10, btnY);
+        _btnHistory.Location = new Point(_btnReset.Right + 10, btnY);
         _linkTerms.Location = new Point((w - _linkTerms.Width) / 2, h - 22);
 
         // --- 1. HEADER ---
@@ -263,14 +287,14 @@ public class SpeedTestForm : Form
         int cardSpacing = 12;
         int cardW = (w - 48 - (cardSpacing * 2)) / 3;
 
-        // Card 1: PING
+        // Card 1: PING & JITTER
         DrawMetricCard(
             g,
             24, cardY, cardW, cardH,
             "PING / LATENCY",
             _finalLatencyMs.HasValue ? $"{_finalLatencyMs.Value:0}" : "--",
             "ms",
-            _finalJitterMs.HasValue ? $"± {_finalJitterMs.Value:0} ms jitter" : "Round trip",
+            _finalJitterMs.HasValue ? $"± {_finalJitterMs.Value:0.0} ms jitter" : "HTTP Round Trip",
             LatencyColor
         );
 
@@ -281,7 +305,7 @@ public class SpeedTestForm : Form
             "DOWNLOAD",
             _finalDownloadMbps.HasValue ? $"{_finalDownloadMbps.Value:0.0}" : "--",
             "Mbps",
-            _currentPhase == SpeedTestPhase.Download ? "Measuring..." : "Throughput",
+            _currentPhase == SpeedTestPhase.Download ? "Streaming (15s)..." : "Throughput",
             DownloadColor
         );
 
@@ -292,7 +316,7 @@ public class SpeedTestForm : Form
             "UPLOAD",
             _finalUploadMbps.HasValue ? $"{_finalUploadMbps.Value:0.0}" : "--",
             "Mbps",
-            _currentPhase == SpeedTestPhase.Upload ? "Measuring..." : "Throughput",
+            _currentPhase == SpeedTestPhase.Upload ? "Streaming (15s)..." : "Throughput",
             UploadColor
         );
 
@@ -307,7 +331,7 @@ public class SpeedTestForm : Form
 
         // --- 4. PROGRESS BAR ---
         int barY = btnY - 26;
-        int barW = Math.Min(340, w - 80);
+        int barW = Math.Min(360, w - 80);
         int barX = (w - barW) / 2;
         using var barBgBrush = new SolidBrush(Color.FromArgb(24, 34, 54));
         using (var bgPath = CreateRoundedRectangle(new RectangleF(barX, barY, barW, 5), 2.5f))
@@ -468,14 +492,6 @@ public class SpeedTestForm : Form
 
     private static double CalculateSpeedFraction(double speedMbps)
     {
-        // Smooth logarithmic distribution:
-        // 0 -> 0.0
-        // 10 -> 0.20
-        // 50 -> 0.40
-        // 100 -> 0.55
-        // 250 -> 0.72
-        // 500 -> 0.86
-        // 1000 -> 1.0
         if (speedMbps <= 0) return 0.0;
         if (speedMbps >= 1000) return 1.0;
         return Math.Log10(1 + (speedMbps * 9.0 / 1000.0)) / Math.Log10(10);
