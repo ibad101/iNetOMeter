@@ -116,19 +116,27 @@ internal class Program
             AssertEqual(desiredHeight, bounds.Height);
         });
 
-        // Visual Improvements & Accent Color Tests (Stage 1.1)
-        RunTest("Visuals_DownloadColor_MatchesRequirement_FF525C", () =>
+        // Visual Tokens & Reference Design Tests
+        RunTest("Visuals_DownloadAccent_Matches_FF525C", () =>
         {
-            AssertEqual(255, (int)TaskbarBandForm.DownloadColor.R);
-            AssertEqual(82, (int)TaskbarBandForm.DownloadColor.G);
-            AssertEqual(92, (int)TaskbarBandForm.DownloadColor.B);
+            AssertEqual(255, (int)TaskbarBandForm.DownloadAccent.R);
+            AssertEqual(82, (int)TaskbarBandForm.DownloadAccent.G);
+            AssertEqual(92, (int)TaskbarBandForm.DownloadAccent.B);
         });
 
-        RunTest("Visuals_UploadColor_MatchesRequirement_4CA8FF", () =>
+        RunTest("Visuals_UploadAccent_Matches_4CA8FF", () =>
         {
-            AssertEqual(76, (int)TaskbarBandForm.UploadColor.R);
-            AssertEqual(168, (int)TaskbarBandForm.UploadColor.G);
-            AssertEqual(255, (int)TaskbarBandForm.UploadColor.B);
+            AssertEqual(76, (int)TaskbarBandForm.UploadAccent.R);
+            AssertEqual(168, (int)TaskbarBandForm.UploadAccent.G);
+            AssertEqual(255, (int)TaskbarBandForm.UploadAccent.B);
+        });
+
+        RunTest("Visuals_ReferenceBadgesAndBackground_MatchPalette", () =>
+        {
+            AssertEqual(Color.FromArgb(69, 37, 43), TaskbarBandForm.DownloadBadgeBg);
+            AssertEqual(Color.FromArgb(30, 53, 74), TaskbarBandForm.UploadBadgeBg);
+            AssertEqual(Color.FromArgb(32, 36, 43), TaskbarBandForm.BackgroundCharcoal);
+            AssertEqual(Color.White, TaskbarBandForm.SpeedTextColor);
         });
 
         RunTest("NativeMethods_DwmStructSizes_Valid", () =>

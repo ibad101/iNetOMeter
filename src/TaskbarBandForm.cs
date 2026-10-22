@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Windows.Forms;
 
@@ -7,16 +8,34 @@ namespace iNetOMeter;
 
 public class TaskbarBandForm : Form
 {
-    // Design accents per Stage 1.1 requirements
-    public static readonly Color DownloadColor = Color.FromArgb(255, 82, 92);  // #FF525C Red accent
-    public static readonly Color UploadColor = Color.FromArgb(76, 168, 255);    // #4CA8FF Blue accent
+    // Design tokens matching reference image
+    public static readonly Color DownloadAccent = Color.FromArgb(255, 82, 92);    // #FF525C Red
+    public static readonly Color DownloadBadgeBg = Color.FromArgb(69, 37, 43);    // #45252B Dark Muted Red
+    public static readonly Color UploadAccent = Color.FromArgb(76, 168, 255);      // #4CA8FF Blue
+    public static readonly Color UploadBadgeBg = Color.FromArgb(30, 53, 74);      // #1E354A Dark Muted Blue
+    public static readonly Color BackgroundCharcoal = Color.FromArgb(32, 36, 43); // #20242B Dark Charcoal
+    public static readonly Color DividerColor = Color.FromArgb(56, 61, 72);        // #383D48 Subtle Divider
+    public static readonly Color BorderColor = Color.FromArgb(48, 54, 66);         // #303642 Perimeter Border
+    public static readonly Color SpeedTextColor = Color.White;                    // #FFFFFF Bold White
 
     private readonly NetworkMonitor _networkMonitor;
     private readonly TaskbarTracker _taskbarTracker;
     private readonly System.Windows.Forms.Timer _updateTimer;
-    private readonly Font _textFont;
-    private readonly Font _arrowFont;
     private readonly ContextMenuStrip _contextMenu;
+
+    private readonly Font _labelFont;
+    private readonly Font _valueFont;
+
+    private readonly SolidBrush _dlTextBrush;
+    private readonly SolidBrush _ulTextBrush;
+    private readonly SolidBrush _whiteBrush;
+    private readonly SolidBrush _dlBadgeBrush;
+    private readonly SolidBrush _ulBadgeBrush;
+
+    private readonly Pen _dlArrowPen;
+    private readonly Pen _ulArrowPen;
+    private readonly Pen _divPen;
+    private readonly Pen _borderPen;
 
     private NetworkSpeed _currentSpeed = new(0, 0);
     private Rectangle _lastBounds = Rectangle.Empty;
@@ -31,15 +50,41 @@ public class TaskbarBandForm : Form
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
         DoubleBuffered = true;
-        BackColor = Color.Black;
-        Size = new Size(84, 40);
+        BackColor = BackgroundCharcoal;
+        Size = new Size(94, 40);
 
-        _textFont = new Font("Segoe UI", 7.5f, FontStyle.Regular, GraphicsUnit.Point);
-        _arrowFont = new Font("Segoe UI", 7.0f, FontStyle.Bold, GraphicsUnit.Point);
+        // Subtle 96% opacity for reliable hardware-composited translucent blending
+        Opacity = 0.96;
+
+        _labelFont = new Font("Segoe UI", 5.0f, FontStyle.Bold, GraphicsUnit.Point);
+        _valueFont = new Font("Segoe UI", 7.2f, FontStyle.Bold, GraphicsUnit.Point);
+
+        _dlTextBrush = new SolidBrush(DownloadAccent);
+        _ulTextBrush = new SolidBrush(UploadAccent);
+        _whiteBrush = new SolidBrush(SpeedTextColor);
+        _dlBadgeBrush = new SolidBrush(DownloadBadgeBg);
+        _ulBadgeBrush = new SolidBrush(UploadBadgeBg);
+
+        _dlArrowPen = new Pen(DownloadAccent, 1.5f)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+            LineJoin = LineJoin.Round
+        };
+
+        _ulArrowPen = new Pen(UploadAccent, 1.5f)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+            LineJoin = LineJoin.Round
+        };
+
+        _divPen = new Pen(DividerColor, 1f);
+        _borderPen = new Pen(BorderColor, 1f);
 
         // Context menu
         _contextMenu = new ContextMenuStrip();
-        var titleItem = new ToolStripMenuItem("iNetOMeter (Stage 1.1)") { Enabled = false };
+        var titleItem = new ToolStripMenuItem("iNetOMeter (Reference Layout)") { Enabled = false };
         var exitItem = new ToolStripMenuItem("Exit", null, (_, _) => Application.Exit());
         _contextMenu.Items.Add(titleItem);
         _contextMenu.Items.Add(new ToolStripSeparator());
@@ -68,17 +113,9 @@ public class TaskbarBandForm : Form
 
     protected override bool ShowWithoutActivation => true;
 
-    protected override void OnHandleCreated(EventArgs e)
-    {
-        base.OnHandleCreated(e);
-        // Apply acrylic blur behind window with subtle 78% opacity dark tint (0xC8101010)
-        NativeMethods.EnableTaskbarBlur(Handle, 0xC8101010);
-    }
-
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
-        NativeMethods.EnableTaskbarBlur(Handle, 0xC8101010);
         UpdatePositionAndSpeed();
         _updateTimer.Start();
     }
@@ -111,34 +148,71 @@ public class TaskbarBandForm : Form
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
-        // Clear with Color.Black so DWM replaces black with the acrylic blur and tint
-        e.Graphics.Clear(Color.Black);
+        e.Graphics.Clear(BackgroundCharcoal);
     }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
         Graphics g = e.Graphics;
-        g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
-        // Subtle frosted-glass boundary highlight for clean edge definition
-        using var borderPen = new Pen(Color.FromArgb(30, 255, 255, 255), 1);
-        g.DrawRectangle(borderPen, 0, 0, Width - 1, Height - 1);
+        // Subtle perimeter border
+        g.DrawRectangle(_borderPen, 0, 0, Width - 1, Height - 1);
 
-        // Upload brush (#4CA8FF Blue accent)
-        using var upBrush = new SolidBrush(UploadColor);
-        // Download brush (#FF525C Red accent)
-        using var downBrush = new SolidBrush(DownloadColor);
+        // --- TOP ROW: DOWNLOAD ---
+        // Rounded dark-red badge
+        using (var dlBadgePath = CreateRoundedRectangle(new RectangleF(4, 2, 16, 16), 3.5f))
+        {
+            g.FillPath(_dlBadgeBrush, dlBadgePath);
+        }
 
-        // Line 1: Upload (▲)
-        string upText = _currentSpeed.UploadFormatted;
-        g.DrawString("▲", _arrowFont, upBrush, 3, 3);
-        g.DrawString(upText, _textFont, upBrush, 15, 3);
+        // Downward Arrow (↓)
+        g.DrawLine(_dlArrowPen, 12.0f, 5.0f, 12.0f, 13.0f);
+        g.DrawLine(_dlArrowPen, 8.5f, 9.5f, 12.0f, 13.0f);
+        g.DrawLine(_dlArrowPen, 15.5f, 9.5f, 12.0f, 13.0f);
 
-        // Line 2: Download (▼)
-        string downText = _currentSpeed.DownloadFormatted;
-        g.DrawString("▼", _arrowFont, downBrush, 3, 20);
-        g.DrawString(downText, _textFont, downBrush, 15, 20);
+        // DOWNLOAD label (uppercase red)
+        g.DrawString("DOWNLOAD", _labelFont, _dlTextBrush, 24f, 1.0f);
+
+        // Download speed value (bold white)
+        string downSpeed = _currentSpeed.DownloadFormatted;
+        g.DrawString(downSpeed, _valueFont, _whiteBrush, 24f, 8.5f);
+
+        // --- SUBTLE HORIZONTAL DIVIDER ---
+        g.DrawLine(_divPen, 3f, 19.5f, Width - 3f, 19.5f);
+
+        // --- BOTTOM ROW: UPLOAD ---
+        // Rounded dark-blue badge
+        using (var ulBadgePath = CreateRoundedRectangle(new RectangleF(4, 22, 16, 16), 3.5f))
+        {
+            g.FillPath(_ulBadgeBrush, ulBadgePath);
+        }
+
+        // Upward Arrow (↑)
+        g.DrawLine(_ulArrowPen, 12.0f, 34.5f, 12.0f, 26.5f);
+        g.DrawLine(_ulArrowPen, 8.5f, 30.0f, 12.0f, 26.5f);
+        g.DrawLine(_ulArrowPen, 15.5f, 30.0f, 12.0f, 26.5f);
+
+        // UPLOAD label (uppercase blue)
+        g.DrawString("UPLOAD", _labelFont, _ulTextBrush, 24f, 21.0f);
+
+        // Upload speed value (bold white)
+        string upSpeed = _currentSpeed.UploadFormatted;
+        g.DrawString(upSpeed, _valueFont, _whiteBrush, 24f, 28.5f);
+    }
+
+    private static GraphicsPath CreateRoundedRectangle(RectangleF rect, float radius)
+    {
+        GraphicsPath path = new GraphicsPath();
+        float diameter = radius * 2;
+        path.AddArc(rect.X, rect.Y, diameter, diameter, 180, 90);
+        path.AddArc(rect.Right - diameter, rect.Y, diameter, diameter, 270, 90);
+        path.AddArc(rect.Right - diameter, rect.Bottom - diameter, diameter, diameter, 0, 90);
+        path.AddArc(rect.X, rect.Bottom - diameter, diameter, diameter, 90, 90);
+        path.CloseFigure();
+        return path;
     }
 
     protected override void Dispose(bool disposing)
@@ -147,8 +221,21 @@ public class TaskbarBandForm : Form
         {
             _updateTimer.Stop();
             _updateTimer.Dispose();
-            _textFont.Dispose();
-            _arrowFont.Dispose();
+
+            _labelFont.Dispose();
+            _valueFont.Dispose();
+
+            _dlTextBrush.Dispose();
+            _ulTextBrush.Dispose();
+            _whiteBrush.Dispose();
+            _dlBadgeBrush.Dispose();
+            _ulBadgeBrush.Dispose();
+
+            _dlArrowPen.Dispose();
+            _ulArrowPen.Dispose();
+            _divPen.Dispose();
+            _borderPen.Dispose();
+
             _contextMenu.Dispose();
         }
         base.Dispose(disposing);

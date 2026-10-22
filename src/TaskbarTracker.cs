@@ -50,7 +50,7 @@ public class TaskbarTracker
         return hTray != IntPtr.Zero;
     }
 
-    public Rectangle? GetTargetBounds(int desiredWidth = 84, int desiredHeight = 40)
+    public Rectangle? GetTargetBounds(int desiredWidth = 94, int desiredHeight = 40)
     {
         if (!TryGetTaskbarWindows(out IntPtr hTray, out IntPtr hNotify))
         {
